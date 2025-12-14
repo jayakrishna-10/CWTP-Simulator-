@@ -1,5 +1,5 @@
 import { useSimulationStore } from '../../store/simulationStore';
-import { formatVolume, formatPercentage, getLoadColor } from '../../utils/formatters';
+import { getLoadColor } from '../../utils/formatters';
 import { STATUS_COLORS } from '../../simulation/constants';
 import { EquipmentStatus } from '../../simulation/types';
 
@@ -16,66 +16,80 @@ export default function ExchangerLoadPanel() {
       .filter(([id]) => id.startsWith(type))
       .sort(([a], [b]) => a.localeCompare(b));
 
+  const getStatusBadge = (status: EquipmentStatus) => {
+    const colors = STATUS_COLORS[status];
+    const label = status === 'SERVICE' ? 'SVC' : status === 'STANDBY' ? 'STB' : status === 'REGENERATION' ? 'RGN' : 'MNT';
+    return (
+      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${colors.bg} ${colors.text}`}>
+        {label}
+      </span>
+    );
+  };
+
   return (
     <div className="card">
-      <div className="card-header">Exchanger Loads</div>
-      <div className="card-body space-y-6">
-        {exchangerTypes.map((type) => {
-          const exchangers = getExchangers(type);
-          const config = result!.config.exchangers[type];
+      <div className="card-header py-2">Exchanger Loads</div>
+      <div className="card-body p-2">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          {exchangerTypes.map((type) => {
+            const exchangers = getExchangers(type);
+            const config = result!.config.exchangers[type];
+            const typeLabel = type === 'SAC' ? 'Cation' : type === 'SBA' ? 'Anion' : 'Mixed Bed';
+            const inService = exchangers.filter(([, e]) => e.status === 'SERVICE').length;
 
-          return (
-            <div key={type}>
-              <h4 className="text-sm font-medium text-slate-600 mb-3">{type} Exchangers</h4>
-              <div className="space-y-2">
-                {exchangers.map(([id, exchanger], index) => {
-                  const obrLimit = config[index].obrLimit;
-                  const loadPercent = Math.min(100, exchanger.loadPercentage);
-                  const loadColor = getLoadColor(exchanger.loadPercentage);
-                  const statusColors = STATUS_COLORS[exchanger.status as EquipmentStatus];
+            return (
+              <div key={type} className="bg-slate-50 rounded-lg p-2">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-2 pb-1 border-b border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-slate-700 text-sm">{type}</span>
+                    <span className="text-[10px] text-slate-500">({typeLabel})</span>
+                  </div>
+                  <span className="text-xs text-slate-500">{inService} in SVC</span>
+                </div>
 
-                  return (
-                    <div key={id} className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-slate-700 w-14">{id}</span>
-                          <span className={`badge ${statusColors.bg} ${statusColors.text}`}>
-                            {exchanger.status === 'SERVICE'
-                              ? 'SVC'
-                              : exchanger.status === 'STANDBY'
-                              ? 'STB'
-                              : exchanger.status === 'REGENERATION'
-                              ? 'RGN'
-                              : 'MNT'}
-                          </span>
-                        </div>
-                        <div className="text-right">
-                          <span className="font-semibold" style={{ color: loadColor }}>
-                            {formatPercentage(exchanger.loadPercentage)}
-                          </span>
-                          <span className="text-xs text-slate-500 ml-2">
-                            ({formatVolume(exchanger.load)}/{formatVolume(obrLimit)})
-                          </span>
-                        </div>
-                      </div>
+                {/* Compact Table */}
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500">
+                      <th className="text-left font-medium pb-1 w-12">Unit</th>
+                      <th className="text-center font-medium pb-1 w-14">Status</th>
+                      <th className="text-right font-medium pb-1">Load</th>
+                      <th className="text-right font-medium pb-1 w-14">OBR</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {exchangers.map(([id, exchanger], index) => {
+                      const obrLimit = config[index].obrLimit;
+                      const loadColor = getLoadColor(exchanger.loadPercentage);
+                      const letter = id.split('-')[1];
 
-                      {/* Load Bar */}
-                      <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all duration-300"
-                          style={{
-                            width: `${loadPercent}%`,
-                            backgroundColor: loadColor,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                      return (
+                        <tr key={id} className="border-t border-slate-100">
+                          <td className="py-1 font-medium text-slate-700">{letter}</td>
+                          <td className="py-1 text-center">
+                            {getStatusBadge(exchanger.status as EquipmentStatus)}
+                          </td>
+                          <td className="py-1 text-right">
+                            <span
+                              className="font-bold tabular-nums"
+                              style={{ color: loadColor }}
+                            >
+                              {Math.round(exchanger.load)}
+                            </span>
+                          </td>
+                          <td className="py-1 text-right text-slate-500 tabular-nums">
+                            {obrLimit}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </div>
   );
