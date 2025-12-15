@@ -1,3 +1,6 @@
+import { ShiftType } from '../simulation/types';
+import { SHIFT_INFO } from '../simulation/constants';
+
 export function formatTime(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
@@ -8,6 +11,52 @@ export function formatTimeWithSeconds(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:00`;
+}
+
+// Format time as actual clock time based on shift
+export function formatShiftTime(minutesIntoShift: number, shift: ShiftType): string {
+  const shiftInfo = SHIFT_INFO[shift];
+  const startHour = shiftInfo.startHour;
+
+  // Calculate actual hours and minutes
+  const totalMinutes = startHour * 60 + minutesIntoShift;
+  let hours = Math.floor(totalMinutes / 60) % 24;
+  const mins = totalMinutes % 60;
+
+  // Format as 24-hour time
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+}
+
+// Format shift time with AM/PM
+export function formatShiftTime12h(minutesIntoShift: number, shift: ShiftType): string {
+  const shiftInfo = SHIFT_INFO[shift];
+  const startHour = shiftInfo.startHour;
+
+  // Calculate actual hours and minutes
+  const totalMinutes = startHour * 60 + minutesIntoShift;
+  let hours = Math.floor(totalMinutes / 60) % 24;
+  const mins = totalMinutes % 60;
+
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+
+  return `${displayHours}:${mins.toString().padStart(2, '0')} ${ampm}`;
+}
+
+// Get shift label for display
+export function getShiftLabel(shift: ShiftType): string {
+  return SHIFT_INFO[shift].name;
+}
+
+// Get shift time range for display
+export function getShiftTimeRange(shift: ShiftType): string {
+  const shiftInfo = SHIFT_INFO[shift];
+  const formatHour = (h: number) => {
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const displayHour = h % 12 || 12;
+    return `${displayHour}:00 ${ampm}`;
+  };
+  return `${formatHour(shiftInfo.startHour)} - ${formatHour(shiftInfo.endHour)}`;
 }
 
 export function formatNumber(value: number, decimals: number = 1): string {

@@ -7,6 +7,7 @@ import ExchangerLoadPanel from './ExchangerLoadPanel';
 import TrendChart from './TrendChart';
 import TimelineControl from './TimelineControl';
 import EventLog from './EventLog';
+import LogsheetPanel from './LogsheetPanel';
 
 export default function Dashboard() {
   const { activeTab, result } = useSimulationStore();
@@ -31,6 +32,7 @@ export default function Dashboard() {
             {activeTab === 'tanks' && <TankLevelPanel />}
             {activeTab === 'loads' && <ExchangerLoadPanel />}
             {activeTab === 'trends' && <TrendChart />}
+            {activeTab === 'logsheet' && <LogsheetPanel />}
           </div>
 
           {/* Desktop: Dense Grid Layout */}
@@ -51,13 +53,20 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Bottom Row: Trends + Event Log */}
+            {/* Middle Row: Trends + Event Log */}
             <div className="grid grid-cols-12 gap-2">
               <div className="col-span-8">
                 <TrendChart />
               </div>
               <div className="col-span-4">
                 <EventLog />
+              </div>
+            </div>
+
+            {/* Bottom Row: Logsheet - Full Width */}
+            <div className="grid grid-cols-12 gap-2">
+              <div className="col-span-12">
+                <LogsheetPanel />
               </div>
             </div>
           </div>

@@ -1,8 +1,16 @@
 export const CONSTANTS = {
   // Time
-  SIMULATION_DURATION_MINUTES: 480,
+  SIMULATION_DURATION_MINUTES: 480, // 8 hours = one shift
   DEFAULT_PLAYBACK_SPEED: 50,
   CALCULATION_INTERVAL_MINUTES: 1,
+
+  // Shift Configuration
+  SHIFT_A_START_HOUR: 6,   // 6:00 AM
+  SHIFT_A_END_HOUR: 14,    // 2:00 PM
+  SHIFT_B_START_HOUR: 14,  // 2:00 PM
+  SHIFT_B_END_HOUR: 22,    // 10:00 PM
+  SHIFT_C_START_HOUR: 22,  // 10:00 PM
+  SHIFT_C_END_HOUR: 6,     // 6:00 AM (next day)
 
   // DG Tank
   DG_DIAMETER_M: 7,
@@ -15,6 +23,8 @@ export const CONSTANTS = {
   DG_TOTAL_CAPACITY_M3: 154,
   DG_WARNING_LOW_LEVEL_M: 1.0,
   DG_WARNING_HIGH_LEVEL_M: 2.0,
+  // New threshold for exchanger service logic
+  DG_LOW_THRESHOLD_M: 1.0,  // If DG < 1m, run all available cations
 
   // DM Tank
   DM_CAPACITY_M3: 800,
@@ -28,6 +38,18 @@ export const CONSTANTS = {
   DM_RECOVERY_LEVEL_M: 6.5,
   DM_TRANSFER_TRIGGER_LEVEL_M: 1.0,
   DM_TRANSFER_STOP_LEVEL_M: 0.8,
+  // New threshold for exchanger service logic
+  DM_LOW_THRESHOLD_M: 7.0,  // If DM < 7m, run all available anions (when DG > 0.8m)
+  DM_CRITICAL_LEVEL_M: 0.8, // Critical level for emergency transfer
+  DM_SERVICE_MIN_FOR_FILLING_M: 3.0, // Service tanks must be > 3m to fill standby
+  DM_STANDBY_FILL_TARGET_M: 7.0, // Fill standby tanks up to 7m
+  DM_STANDBY_FILL_RATE_M3HR: 100, // Fill rate for standby tanks
+
+  // DG Critical threshold
+  DG_CRITICAL_LEVEL_M: 0.8,  // Critical DG level for anion reduction
+
+  // Maximum exchangers in service for each type
+  MAX_EXCHANGERS_IN_SERVICE: 4,
 
   // Exchangers
   EXCHANGER_FLOW_MIN: 60,
@@ -88,6 +110,13 @@ export const CONSTANTS = {
 };
 
 export const EXCHANGER_LABELS = ['A', 'B', 'C', 'D', 'E'];
+
+// Shift Information
+export const SHIFT_INFO = {
+  A: { type: 'A' as const, name: 'A Shift (Morning)', startHour: 6, endHour: 14 },
+  B: { type: 'B' as const, name: 'B Shift (Afternoon)', startHour: 14, endHour: 22 },
+  C: { type: 'C' as const, name: 'C Shift (Night)', startHour: 22, endHour: 6 },
+};
 
 export const STATUS_COLORS = {
   SERVICE: { bg: 'bg-success-100', text: 'text-success-600', fill: '#22c55e' },

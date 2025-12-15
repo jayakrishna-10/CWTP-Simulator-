@@ -42,8 +42,8 @@ interface SimulationStore {
   visibleEvents: SimulationEvent[];
 
   // UI State
-  activeTab: 'overview' | 'tanks' | 'loads' | 'trends';
-  setActiveTab: (tab: 'overview' | 'tanks' | 'loads' | 'trends') => void;
+  activeTab: 'overview' | 'tanks' | 'loads' | 'trends' | 'logsheet';
+  setActiveTab: (tab: 'overview' | 'tanks' | 'loads' | 'trends' | 'logsheet') => void;
   selectedTrendType: 'dg' | 'dm' | 'sac' | 'sba' | 'mb' | 'flows';
   setSelectedTrendType: (type: 'dg' | 'dm' | 'sac' | 'sba' | 'mb' | 'flows') => void;
 

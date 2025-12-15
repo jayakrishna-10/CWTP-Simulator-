@@ -41,6 +41,7 @@ export const createDefaultConfig = (): SimulationConfig => ({
     CDCP: CONSTANTS.CDCP_FLOW_DEFAULT,
     Mills: CONSTANTS.MILLS_FLOW_DEFAULT,
   },
+  shift: 'A', // Default to A shift (6 AM - 2 PM)
 });
 
 export const createScenarioConfig = (scenario: 'normal' | 'immediate-regen' | 'low-dg' | 'cascade' | 'transfer'): SimulationConfig => {

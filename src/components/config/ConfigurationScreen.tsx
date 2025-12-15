@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useSimulationStore } from '../../store/simulationStore';
 import { CONSTANTS } from '../../simulation/constants';
 import { createScenarioConfig } from '../../simulation/defaults';
+import { ShiftType } from '../../simulation/types';
+import { getShiftTimeRange } from '../../utils/formatters';
 import {
   Droplets,
   Play,
@@ -13,6 +15,7 @@ import {
   FlaskConical,
   Waves,
   Info,
+  Clock,
 } from 'lucide-react';
 
 export default function ConfigurationScreen() {
@@ -98,6 +101,13 @@ export default function ConfigurationScreen() {
     }));
   };
 
+  const handleShiftChange = (shift: ShiftType) => {
+    updateConfig((cfg) => ({
+      ...cfg,
+      shift,
+    }));
+  };
+
   // Validation
   const validateConfig = () => {
     const errors: string[] = [];
@@ -169,6 +179,45 @@ export default function ConfigurationScreen() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-4 space-y-4">
+        {/* Shift Selection */}
+        <div className="card border-2 border-primary-300">
+          <div className="card-header py-2 flex items-center gap-2 bg-primary-50">
+            <Clock className="w-4 h-4 text-primary-600" />
+            <span className="text-primary-700 font-semibold">Select Shift</span>
+          </div>
+          <div className="p-4">
+            <div className="grid grid-cols-3 gap-3">
+              {(['A', 'B', 'C'] as ShiftType[]).map((shift) => {
+                const isSelected = config.shift === shift;
+                return (
+                  <button
+                    key={shift}
+                    onClick={() => handleShiftChange(shift)}
+                    className={`p-3 rounded-lg border-2 transition-all ${
+                      isSelected
+                        ? 'border-primary-500 bg-primary-50 ring-2 ring-primary-200'
+                        : 'border-slate-200 hover:border-slate-300 bg-white'
+                    }`}
+                  >
+                    <div className={`text-lg font-bold ${isSelected ? 'text-primary-700' : 'text-slate-700'}`}>
+                      {shift} Shift
+                    </div>
+                    <div className={`text-xs ${isSelected ? 'text-primary-600' : 'text-slate-500'}`}>
+                      {getShiftTimeRange(shift)}
+                    </div>
+                    <div className={`text-[10px] mt-1 ${isSelected ? 'text-primary-500' : 'text-slate-400'}`}>
+                      {shift === 'A' ? 'Morning' : shift === 'B' ? 'Afternoon' : 'Night'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-slate-500 mt-3 text-center">
+              Each simulation runs one complete 8-hour shift
+            </p>
+          </div>
+        </div>
+
         {/* Quick Scenarios */}
         <div className="card">
           <div className="card-header py-2 flex items-center gap-2">

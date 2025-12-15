@@ -1,11 +1,12 @@
 import { useSimulationStore } from '../../store/simulationStore';
-import { LayoutDashboard, Waves, BarChart3, TrendingUp } from 'lucide-react';
+import { LayoutDashboard, Waves, BarChart3, TrendingUp, ClipboardList } from 'lucide-react';
 
 const tabs = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'tanks', label: 'Tanks', icon: Waves },
   { id: 'loads', label: 'Loads', icon: BarChart3 },
   { id: 'trends', label: 'Trends', icon: TrendingUp },
+  { id: 'logsheet', label: 'Logsheet', icon: ClipboardList },
 ] as const;
 
 export default function MobileNavTabs() {
