@@ -412,12 +412,13 @@ function calculateNextState(
           let shouldBeInService = false;
 
           if (type === 'SAC') {
-            // SAC should be in service if DG is low and we have capacity
-            shouldBeInService = currentDGLevel < CONSTANTS.DG_LOW_THRESHOLD_M && inServiceCount < CONSTANTS.MAX_EXCHANGERS_IN_SERVICE;
+            // SAC should be in service if DG < 2.0m and we have capacity
+            shouldBeInService = currentDGLevel < CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M &&
+                               inServiceCount < CONSTANTS.MAX_EXCHANGERS_IN_SERVICE;
           } else if (type === 'SBA') {
-            // SBA should be in service if DM is low and DG is not critical
-            shouldBeInService = currentDMLevel < CONSTANTS.DM_LOW_THRESHOLD_M &&
-                               currentDGLevel > CONSTANTS.DG_CRITICAL_LEVEL_M &&
+            // SBA should be in service if DM < 6.8m and DG > 1.0m
+            shouldBeInService = currentDMLevel < CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M &&
+                               currentDGLevel > CONSTANTS.DG_SBA_MIN_THRESHOLD_M &&
                                inServiceCount < CONSTANTS.MAX_EXCHANGERS_IN_SERVICE;
           } else if (type === 'MB') {
             // MB should match SBA count
@@ -561,8 +562,8 @@ function calculateNextState(
   const findLowestLoad = (exchangers: ExchangerState[]) =>
     exchangers.reduce((min, e) => (e.currentLoad < min.currentLoad ? e : min));
 
-  // Rule 1: If DG < 1m, run all available cation exchangers (max 4)
-  if (newDGLevel < CONSTANTS.DG_LOW_THRESHOLD_M) {
+  // Rule 1: SAC goes to SERVICE if DG < 2.0m (max 4)
+  if (newDGLevel < CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M) {
     const availableSAC = getAvailableExchangers(newState.exchangers.SAC);
     const inServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
 
@@ -572,11 +573,11 @@ function calculateNextState(
       sac.status = 'SERVICE';
       inServiceSAC.push(sac);
 
-      const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_LOW_THRESHOLD_M}m threshold). Putting additional cation exchanger into service to increase DG inflow.`;
+      const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M}m threshold). Putting cation exchanger into service to increase DG inflow.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
-        message: `${sac.id} put into service - low DG level`,
+        message: `${sac.id} put into service - DG below ${CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M}m`,
         equipmentId: sac.id,
         severity: 'warning',
       });
@@ -593,43 +594,79 @@ function calculateNextState(
     }
   }
 
-  // Rule 2: If DG < 0.8m AND all available cations are in service, put one anion on standby (IRRESPECTIVE of DM level)
-  if (newDGLevel < CONSTANTS.DG_CRITICAL_LEVEL_M) {
-    const availableSAC = getAvailableExchangers(newState.exchangers.SAC);
+  // Rule 1b: SAC goes to STANDBY if DG > 2.0m (keep at least 1 in service)
+  if (newDGLevel > CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M) {
     const inServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
 
-    // Check if all available cations are in service (no standby SAC left)
-    if (availableSAC.length === 0 && inServiceSAC.length > 0) {
-      const sbaInService = getInServiceExchangers(newState.exchangers.SBA);
-      if (sbaInService.length > 1) {
-        const lowestLoadSBA = findLowestLoad(sbaInService);
-        lowestLoadSBA.status = 'STANDBY';
+    // Put excess SAC on standby (keep at least 1 in service)
+    while (inServiceSAC.length > 1) {
+      const lowestLoadSAC = findLowestLoad(inServiceSAC);
+      lowestLoadSAC.status = 'STANDBY';
+      const idx = inServiceSAC.indexOf(lowestLoadSAC);
+      if (idx > -1) inServiceSAC.splice(idx, 1);
 
-        const reason = `DG level CRITICAL at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_CRITICAL_LEVEL_M}m). All available cations are in service. Reducing anion exchangers to decrease DG consumption (irrespective of DM level: ${avgDMLevel.toFixed(2)}m). Selected ${lowestLoadSBA.id} (lowest load: ${lowestLoadSBA.currentLoad.toFixed(0)}).`;
-        events.push({
-          timestamp: newState.currentTime,
-          type: 'LEVEL_WARNING',
-          message: `${lowestLoadSBA.id} taken out of service - critical DG level, all SAC in service`,
-          equipmentId: lowestLoadSBA.id,
-          severity: 'warning',
-        });
-        logsheet.push(createLogsheetEntry(
-          newState.currentTime,
-          shiftStartHour,
-          'EXCHANGER_TO_STANDBY',
-          lowestLoadSBA.id,
-          reason,
-          `Put ${lowestLoadSBA.id} on standby (lowest load) - DG critical`,
-          newDGLevel,
-          avgDMLevel
-        ));
-      }
+      const reason = `DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M}m threshold). Putting cation exchanger on standby. Selected ${lowestLoadSAC.id} (lowest load: ${lowestLoadSAC.currentLoad.toFixed(0)}).`;
+      events.push({
+        timestamp: newState.currentTime,
+        type: 'STATUS_CHANGE',
+        message: `${lowestLoadSAC.id} put on standby - DG above ${CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M}m`,
+        equipmentId: lowestLoadSAC.id,
+        severity: 'info',
+      });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_STANDBY',
+        lowestLoadSAC.id,
+        reason,
+        `Put ${lowestLoadSAC.id} on standby (lowest load)`,
+        newDGLevel,
+        avgDMLevel
+      ));
     }
   }
 
-  // Rule 3: If DM < 7m AND DG > 0.8m, run all available anion exchangers (max 4)
-  // Only add anions if DG is not critical (to avoid conflicting with Rule 2)
-  if (avgDMLevel < CONSTANTS.DM_LOW_THRESHOLD_M && newDGLevel > CONSTANTS.DG_CRITICAL_LEVEL_M) {
+  // Rule 2: SBA goes to STANDBY if DM > 7.0m OR DG < 0.8m (keep at least 1 in service)
+  const sbaShouldStandby = avgDMLevel > CONSTANTS.DM_SBA_STANDBY_THRESHOLD_M ||
+                          newDGLevel < CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M;
+
+  if (sbaShouldStandby) {
+    const inServiceSBA = getInServiceExchangers(newState.exchangers.SBA);
+
+    // Put excess SBA on standby (keep at least 1 in service)
+    while (inServiceSBA.length > 1) {
+      const lowestLoadSBA = findLowestLoad(inServiceSBA);
+      lowestLoadSBA.status = 'STANDBY';
+      const idx = inServiceSBA.indexOf(lowestLoadSBA);
+      if (idx > -1) inServiceSBA.splice(idx, 1);
+
+      const standbyReason = newDGLevel < CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M
+        ? `DG level CRITICAL at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M}m)`
+        : `DM level at ${avgDMLevel.toFixed(2)}m (above ${CONSTANTS.DM_SBA_STANDBY_THRESHOLD_M}m)`;
+
+      const reason = `${standbyReason}. Putting anion exchanger on standby. Selected ${lowestLoadSBA.id} (lowest load: ${lowestLoadSBA.currentLoad.toFixed(0)}).`;
+      events.push({
+        timestamp: newState.currentTime,
+        type: 'STATUS_CHANGE',
+        message: `${lowestLoadSBA.id} put on standby - ${standbyReason}`,
+        equipmentId: lowestLoadSBA.id,
+        severity: 'warning',
+      });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_STANDBY',
+        lowestLoadSBA.id,
+        reason,
+        `Put ${lowestLoadSBA.id} on standby (lowest load)`,
+        newDGLevel,
+        avgDMLevel
+      ));
+    }
+  }
+
+  // Rule 3: SBA goes to SERVICE if DM < 6.8m AND DG > 1.0m (max 4)
+  if (avgDMLevel < CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M && newDGLevel > CONSTANTS.DG_SBA_MIN_THRESHOLD_M) {
     const availableSBA = getAvailableExchangers(newState.exchangers.SBA);
     const inServiceSBA = getInServiceExchangers(newState.exchangers.SBA);
 
@@ -639,11 +676,11 @@ function calculateNextState(
       sba.status = 'SERVICE';
       inServiceSBA.push(sba);
 
-      const reason = `DM level at ${avgDMLevel.toFixed(2)}m (below ${CONSTANTS.DM_LOW_THRESHOLD_M}m) AND DG level safe at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_CRITICAL_LEVEL_M}m). Putting additional anion exchanger into service to increase DM production.`;
+      const reason = `DM level at ${avgDMLevel.toFixed(2)}m (below ${CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M}m) AND DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SBA_MIN_THRESHOLD_M}m). Putting anion exchanger into service to increase DM production.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
-        message: `${sba.id} put into service - low DM level, DG safe`,
+        message: `${sba.id} put into service - DM below ${CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M}m, DG safe`,
         equipmentId: sba.id,
         severity: 'warning',
       });
