@@ -121,6 +121,7 @@ export const SHIFT_INFO = {
 export const STATUS_COLORS = {
   SERVICE: { bg: 'bg-success-100', text: 'text-success-600', fill: '#22c55e' },
   STANDBY: { bg: 'bg-slate-100', text: 'text-slate-600', fill: '#64748b' },
+  EXHAUST: { bg: 'bg-orange-100', text: 'text-orange-600', fill: '#ea580c' },
   REGENERATION: { bg: 'bg-warning-100', text: 'text-warning-600', fill: '#f59e0b' },
   MAINTENANCE: { bg: 'bg-danger-100', text: 'text-danger-600', fill: '#ef4444' },
 };

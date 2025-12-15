@@ -12,6 +12,7 @@ import {
   LogsheetEntry,
   LogsheetActionType,
   ShiftInfo,
+  RegenerationDetail,
 } from './types';
 import { CONSTANTS, SHIFT_INFO } from './constants';
 
@@ -391,25 +392,69 @@ function calculateNextState(
 
     if (result.phaseChanged && result.regen) {
       if (result.completed) {
-        // Reset exchanger and move to standby
+        // Reset exchanger load
         const exchanger = newState.exchangers[type].find(
           (e) => e.id === result.regen!.exchangerId
         );
         if (exchanger) {
-          exchanger.status = 'STANDBY';
           exchanger.currentLoad = 0;
           exchanger.loadPercentage = 0;
+
+          // Determine if this bed should go into SERVICE or STANDBY
+          // Check current conditions to decide if the bed is needed in service
+          const currentDGLevel = newState.tanks.DG[0].currentLevel;
+          const serviceDM = newState.tanks.DM.filter(t => t.status === 'SERVICE');
+          const currentDMLevel = serviceDM.length > 0
+            ? serviceDM.reduce((sum, t) => sum + t.currentLevel, 0) / serviceDM.length
+            : 0;
+
+          const inServiceCount = newState.exchangers[type].filter(e => e.status === 'SERVICE').length;
+          let shouldBeInService = false;
+
+          if (type === 'SAC') {
+            // SAC should be in service if DG is low and we have capacity
+            shouldBeInService = currentDGLevel < CONSTANTS.DG_LOW_THRESHOLD_M && inServiceCount < CONSTANTS.MAX_EXCHANGERS_IN_SERVICE;
+          } else if (type === 'SBA') {
+            // SBA should be in service if DM is low and DG is not critical
+            shouldBeInService = currentDMLevel < CONSTANTS.DM_LOW_THRESHOLD_M &&
+                               currentDGLevel > CONSTANTS.DG_CRITICAL_LEVEL_M &&
+                               inServiceCount < CONSTANTS.MAX_EXCHANGERS_IN_SERVICE;
+          } else if (type === 'MB') {
+            // MB should match SBA count
+            const sbaInService = newState.exchangers.SBA.filter(e => e.status === 'SERVICE').length;
+            shouldBeInService = inServiceCount < sbaInService;
+          }
+
+          if (shouldBeInService) {
+            exchanger.status = 'SERVICE';
+            events.push({
+              timestamp: newState.currentTime,
+              type: 'REGEN_COMPLETE',
+              message: `${result.regen.exchangerId} regeneration complete - put into service`,
+              equipmentId: result.regen.exchangerId,
+              severity: 'info',
+            });
+            events.push({
+              timestamp: newState.currentTime,
+              type: 'STATUS_CHANGE',
+              message: `${exchanger.id} put into service after regeneration`,
+              equipmentId: exchanger.id,
+              severity: 'info',
+            });
+          } else {
+            exchanger.status = 'STANDBY';
+            events.push({
+              timestamp: newState.currentTime,
+              type: 'REGEN_COMPLETE',
+              message: `${result.regen.exchangerId} regeneration complete`,
+              equipmentId: result.regen.exchangerId,
+              severity: 'info',
+            });
+          }
         }
-        events.push({
-          timestamp: newState.currentTime,
-          type: 'REGEN_COMPLETE',
-          message: `${result.regen.exchangerId} regeneration complete`,
-          equipmentId: result.regen.exchangerId,
-          severity: 'info',
-        });
         newState.regeneration[type] = null;
 
-        // Start next in queue if available
+        // Start next in queue if available (EXHAUST beds waiting for regeneration)
         if (newState.regenerationQueue[type].length > 0) {
           const nextId = newState.regenerationQueue[type].shift()!;
           const nextExchanger = newState.exchangers[type].find((e) => e.id === nextId);
@@ -419,7 +464,7 @@ function calculateNextState(
             events.push({
               timestamp: newState.currentTime,
               type: 'REGEN_START',
-              message: `${nextId} regeneration started`,
+              message: `${nextId} regeneration started (from exhaust queue)`,
               equipmentId: nextId,
               severity: 'info',
             });
@@ -433,22 +478,6 @@ function calculateNextState(
           equipmentId: result.regen.exchangerId,
           severity: 'info',
         });
-        // Check if another can start (chemical phase complete)
-        if (newState.regenerationQueue[type].length > 0) {
-          const nextId = newState.regenerationQueue[type].shift()!;
-          const nextExchanger = newState.exchangers[type].find((e) => e.id === nextId);
-          if (nextExchanger) {
-            nextExchanger.status = 'REGENERATION';
-            // Create a second regeneration slot (overlapping rinse)
-            events.push({
-              timestamp: newState.currentTime,
-              type: 'REGEN_START',
-              message: `${nextId} regeneration started`,
-              equipmentId: nextId,
-              severity: 'info',
-            });
-          }
-        }
       }
     }
     newState.regeneration[type] = result.regen;
@@ -500,14 +529,15 @@ function calculateNextState(
             severity: 'info',
           });
         } else {
-          exchanger.status = 'STANDBY';
+          // Set to EXHAUST state - bed is exhausted and waiting for regeneration
+          exchanger.status = 'EXHAUST';
           newState.regenerationQueue[type].push(exchanger.id);
           events.push({
             timestamp: newState.currentTime,
             type: 'STATUS_CHANGE',
-            message: `${exchanger.id} queued for regeneration`,
+            message: `${exchanger.id} exhausted, queued for regeneration`,
             equipmentId: exchanger.id,
-            severity: 'info',
+            severity: 'warning',
           });
         }
       }
@@ -519,6 +549,7 @@ function calculateNextState(
   const avgDMLevel = getAverageDMLevel(newState);
 
   // Helper to get available (STANDBY) exchangers
+  // Only STANDBY beds can be taken into service - excludes EXHAUST beds which need regeneration
   const getAvailableExchangers = (exchangers: ExchangerState[]) =>
     exchangers.filter((e) => e.status === 'STANDBY');
 
@@ -990,10 +1021,29 @@ function createSnapshot(state: SimulationState, events: SimulationEvent[]): Time
 
   const activeRegens: string[] = [];
   const regenPhases: Record<string, RegenerationState['phase']> = {};
+  const regenDetails: Record<string, RegenerationDetail> = {};
+
   for (const type of ['SAC', 'SBA', 'MB'] as ExchangerType[]) {
-    if (state.regeneration[type]) {
-      activeRegens.push(state.regeneration[type]!.exchangerId);
-      regenPhases[state.regeneration[type]!.exchangerId] = state.regeneration[type]!.phase;
+    const regen = state.regeneration[type];
+    if (regen) {
+      activeRegens.push(regen.exchangerId);
+      regenPhases[regen.exchangerId] = regen.phase;
+
+      const totalDuration = regen.totalEndTime - regen.startTime;
+      const elapsedMinutes = state.currentTime - regen.startTime;
+      const remainingMinutes = Math.max(0, regen.totalEndTime - state.currentTime);
+
+      regenDetails[regen.exchangerId] = {
+        exchangerId: regen.exchangerId,
+        exchangerType: regen.exchangerType,
+        phase: regen.phase,
+        startTime: regen.startTime,
+        elapsedMinutes,
+        remainingMinutes,
+        totalDuration,
+        chemicalEndTime: regen.chemicalEndTime,
+        totalEndTime: regen.totalEndTime,
+      };
     }
   }
 
@@ -1012,6 +1062,7 @@ function createSnapshot(state: SimulationState, events: SimulationEvent[]): Time
       active: activeRegens,
       queue: queuedRegens,
       phases: regenPhases,
+      details: regenDetails,
     },
     events,
   };
