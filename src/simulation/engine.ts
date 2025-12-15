@@ -479,9 +479,13 @@ function calculateNextState(
           equipmentId: result.regen.exchangerId,
           severity: 'info',
         });
+        // Update the regeneration state for phase change (not completion)
+        newState.regeneration[type] = result.regen;
       }
+    } else if (result.regen && !result.completed) {
+      // Update regeneration state only if not completed (completion is handled above)
+      newState.regeneration[type] = result.regen;
     }
-    newState.regeneration[type] = result.regen;
   }
 
   // Step 9: Check exhaustion and trigger regeneration
