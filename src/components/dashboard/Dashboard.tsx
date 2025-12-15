@@ -4,6 +4,7 @@ import MobileNavTabs from './MobileNavTabs';
 import OverviewPanel from './OverviewPanel';
 import TankLevelPanel from './TankLevelPanel';
 import ExchangerLoadPanel from './ExchangerLoadPanel';
+import RegenerationPanel from './RegenerationPanel';
 import TrendChart from './TrendChart';
 import TimelineControl from './TimelineControl';
 import EventLog from './EventLog';
@@ -31,6 +32,7 @@ export default function Dashboard() {
             {activeTab === 'overview' && <OverviewPanel />}
             {activeTab === 'tanks' && <TankLevelPanel />}
             {activeTab === 'loads' && <ExchangerLoadPanel />}
+            {activeTab === 'regen' && <RegenerationPanel />}
             {activeTab === 'trends' && <TrendChart />}
             {activeTab === 'logsheet' && <LogsheetPanel />}
           </div>
@@ -53,13 +55,20 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Middle Row: Trends + Event Log */}
+            {/* Regeneration Row: Regeneration Panel + Event Log */}
             <div className="grid grid-cols-12 gap-2">
               <div className="col-span-8">
-                <TrendChart />
+                <RegenerationPanel />
               </div>
               <div className="col-span-4">
                 <EventLog />
+              </div>
+            </div>
+
+            {/* Middle Row: Trends */}
+            <div className="grid grid-cols-12 gap-2">
+              <div className="col-span-12">
+                <TrendChart />
               </div>
             </div>
 

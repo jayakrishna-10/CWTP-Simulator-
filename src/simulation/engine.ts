@@ -12,6 +12,7 @@ import {
   LogsheetEntry,
   LogsheetActionType,
   ShiftInfo,
+  RegenerationDetail,
 } from './types';
 import { CONSTANTS, SHIFT_INFO } from './constants';
 
@@ -391,25 +392,70 @@ function calculateNextState(
 
     if (result.phaseChanged && result.regen) {
       if (result.completed) {
-        // Reset exchanger and move to standby
+        // Reset exchanger load
         const exchanger = newState.exchangers[type].find(
           (e) => e.id === result.regen!.exchangerId
         );
         if (exchanger) {
-          exchanger.status = 'STANDBY';
           exchanger.currentLoad = 0;
           exchanger.loadPercentage = 0;
+
+          // Determine if this bed should go into SERVICE or STANDBY
+          // Check current conditions to decide if the bed is needed in service
+          const currentDGLevel = newState.tanks.DG[0].currentLevel;
+          const serviceDM = newState.tanks.DM.filter(t => t.status === 'SERVICE');
+          const currentDMLevel = serviceDM.length > 0
+            ? serviceDM.reduce((sum, t) => sum + t.currentLevel, 0) / serviceDM.length
+            : 0;
+
+          const inServiceCount = newState.exchangers[type].filter(e => e.status === 'SERVICE').length;
+          let shouldBeInService = false;
+
+          if (type === 'SAC') {
+            // SAC should be in service if DG < 2.0m and we have capacity
+            shouldBeInService = currentDGLevel < CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M &&
+                               inServiceCount < CONSTANTS.MAX_EXCHANGERS_IN_SERVICE;
+          } else if (type === 'SBA') {
+            // SBA should be in service if DM < 6.8m and DG > 1.0m
+            shouldBeInService = currentDMLevel < CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M &&
+                               currentDGLevel > CONSTANTS.DG_SBA_MIN_THRESHOLD_M &&
+                               inServiceCount < CONSTANTS.MAX_EXCHANGERS_IN_SERVICE;
+          } else if (type === 'MB') {
+            // MB should match SBA count
+            const sbaInService = newState.exchangers.SBA.filter(e => e.status === 'SERVICE').length;
+            shouldBeInService = inServiceCount < sbaInService;
+          }
+
+          if (shouldBeInService) {
+            exchanger.status = 'SERVICE';
+            events.push({
+              timestamp: newState.currentTime,
+              type: 'REGEN_COMPLETE',
+              message: `${result.regen.exchangerId} regeneration complete - put into service`,
+              equipmentId: result.regen.exchangerId,
+              severity: 'info',
+            });
+            events.push({
+              timestamp: newState.currentTime,
+              type: 'STATUS_CHANGE',
+              message: `${exchanger.id} put into service after regeneration`,
+              equipmentId: exchanger.id,
+              severity: 'info',
+            });
+          } else {
+            exchanger.status = 'STANDBY';
+            events.push({
+              timestamp: newState.currentTime,
+              type: 'REGEN_COMPLETE',
+              message: `${result.regen.exchangerId} regeneration complete`,
+              equipmentId: result.regen.exchangerId,
+              severity: 'info',
+            });
+          }
         }
-        events.push({
-          timestamp: newState.currentTime,
-          type: 'REGEN_COMPLETE',
-          message: `${result.regen.exchangerId} regeneration complete`,
-          equipmentId: result.regen.exchangerId,
-          severity: 'info',
-        });
         newState.regeneration[type] = null;
 
-        // Start next in queue if available
+        // Start next in queue if available (EXHAUST beds waiting for regeneration)
         if (newState.regenerationQueue[type].length > 0) {
           const nextId = newState.regenerationQueue[type].shift()!;
           const nextExchanger = newState.exchangers[type].find((e) => e.id === nextId);
@@ -419,7 +465,7 @@ function calculateNextState(
             events.push({
               timestamp: newState.currentTime,
               type: 'REGEN_START',
-              message: `${nextId} regeneration started`,
+              message: `${nextId} regeneration started (from exhaust queue)`,
               equipmentId: nextId,
               severity: 'info',
             });
@@ -433,25 +479,13 @@ function calculateNextState(
           equipmentId: result.regen.exchangerId,
           severity: 'info',
         });
-        // Check if another can start (chemical phase complete)
-        if (newState.regenerationQueue[type].length > 0) {
-          const nextId = newState.regenerationQueue[type].shift()!;
-          const nextExchanger = newState.exchangers[type].find((e) => e.id === nextId);
-          if (nextExchanger) {
-            nextExchanger.status = 'REGENERATION';
-            // Create a second regeneration slot (overlapping rinse)
-            events.push({
-              timestamp: newState.currentTime,
-              type: 'REGEN_START',
-              message: `${nextId} regeneration started`,
-              equipmentId: nextId,
-              severity: 'info',
-            });
-          }
-        }
+        // Update the regeneration state for phase change (not completion)
+        newState.regeneration[type] = result.regen;
       }
+    } else if (result.regen && !result.completed) {
+      // Update regeneration state only if not completed (completion is handled above)
+      newState.regeneration[type] = result.regen;
     }
-    newState.regeneration[type] = result.regen;
   }
 
   // Step 9: Check exhaustion and trigger regeneration
@@ -500,14 +534,15 @@ function calculateNextState(
             severity: 'info',
           });
         } else {
-          exchanger.status = 'STANDBY';
+          // Set to EXHAUST state - bed is exhausted and waiting for regeneration
+          exchanger.status = 'EXHAUST';
           newState.regenerationQueue[type].push(exchanger.id);
           events.push({
             timestamp: newState.currentTime,
             type: 'STATUS_CHANGE',
-            message: `${exchanger.id} queued for regeneration`,
+            message: `${exchanger.id} exhausted, queued for regeneration`,
             equipmentId: exchanger.id,
-            severity: 'info',
+            severity: 'warning',
           });
         }
       }
@@ -519,6 +554,7 @@ function calculateNextState(
   const avgDMLevel = getAverageDMLevel(newState);
 
   // Helper to get available (STANDBY) exchangers
+  // Only STANDBY beds can be taken into service - excludes EXHAUST beds which need regeneration
   const getAvailableExchangers = (exchangers: ExchangerState[]) =>
     exchangers.filter((e) => e.status === 'STANDBY');
 
@@ -530,8 +566,8 @@ function calculateNextState(
   const findLowestLoad = (exchangers: ExchangerState[]) =>
     exchangers.reduce((min, e) => (e.currentLoad < min.currentLoad ? e : min));
 
-  // Rule 1: If DG < 1m, run all available cation exchangers (max 4)
-  if (newDGLevel < CONSTANTS.DG_LOW_THRESHOLD_M) {
+  // Rule 1: SAC goes to SERVICE if DG < 2.0m (max 4)
+  if (newDGLevel < CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M) {
     const availableSAC = getAvailableExchangers(newState.exchangers.SAC);
     const inServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
 
@@ -541,11 +577,11 @@ function calculateNextState(
       sac.status = 'SERVICE';
       inServiceSAC.push(sac);
 
-      const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_LOW_THRESHOLD_M}m threshold). Putting additional cation exchanger into service to increase DG inflow.`;
+      const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M}m threshold). Putting cation exchanger into service to increase DG inflow.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
-        message: `${sac.id} put into service - low DG level`,
+        message: `${sac.id} put into service - DG below ${CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M}m`,
         equipmentId: sac.id,
         severity: 'warning',
       });
@@ -562,43 +598,79 @@ function calculateNextState(
     }
   }
 
-  // Rule 2: If DG < 0.8m AND all available cations are in service, put one anion on standby (IRRESPECTIVE of DM level)
-  if (newDGLevel < CONSTANTS.DG_CRITICAL_LEVEL_M) {
-    const availableSAC = getAvailableExchangers(newState.exchangers.SAC);
+  // Rule 1b: SAC goes to STANDBY if DG > 2.0m (keep at least 1 in service)
+  if (newDGLevel > CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M) {
     const inServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
 
-    // Check if all available cations are in service (no standby SAC left)
-    if (availableSAC.length === 0 && inServiceSAC.length > 0) {
-      const sbaInService = getInServiceExchangers(newState.exchangers.SBA);
-      if (sbaInService.length > 1) {
-        const lowestLoadSBA = findLowestLoad(sbaInService);
-        lowestLoadSBA.status = 'STANDBY';
+    // Put excess SAC on standby (keep at least 1 in service)
+    while (inServiceSAC.length > 1) {
+      const lowestLoadSAC = findLowestLoad(inServiceSAC);
+      lowestLoadSAC.status = 'STANDBY';
+      const idx = inServiceSAC.indexOf(lowestLoadSAC);
+      if (idx > -1) inServiceSAC.splice(idx, 1);
 
-        const reason = `DG level CRITICAL at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_CRITICAL_LEVEL_M}m). All available cations are in service. Reducing anion exchangers to decrease DG consumption (irrespective of DM level: ${avgDMLevel.toFixed(2)}m). Selected ${lowestLoadSBA.id} (lowest load: ${lowestLoadSBA.currentLoad.toFixed(0)}).`;
-        events.push({
-          timestamp: newState.currentTime,
-          type: 'LEVEL_WARNING',
-          message: `${lowestLoadSBA.id} taken out of service - critical DG level, all SAC in service`,
-          equipmentId: lowestLoadSBA.id,
-          severity: 'warning',
-        });
-        logsheet.push(createLogsheetEntry(
-          newState.currentTime,
-          shiftStartHour,
-          'EXCHANGER_TO_STANDBY',
-          lowestLoadSBA.id,
-          reason,
-          `Put ${lowestLoadSBA.id} on standby (lowest load) - DG critical`,
-          newDGLevel,
-          avgDMLevel
-        ));
-      }
+      const reason = `DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M}m threshold). Putting cation exchanger on standby. Selected ${lowestLoadSAC.id} (lowest load: ${lowestLoadSAC.currentLoad.toFixed(0)}).`;
+      events.push({
+        timestamp: newState.currentTime,
+        type: 'STATUS_CHANGE',
+        message: `${lowestLoadSAC.id} put on standby - DG above ${CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M}m`,
+        equipmentId: lowestLoadSAC.id,
+        severity: 'info',
+      });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_STANDBY',
+        lowestLoadSAC.id,
+        reason,
+        `Put ${lowestLoadSAC.id} on standby (lowest load)`,
+        newDGLevel,
+        avgDMLevel
+      ));
     }
   }
 
-  // Rule 3: If DM < 7m AND DG > 0.8m, run all available anion exchangers (max 4)
-  // Only add anions if DG is not critical (to avoid conflicting with Rule 2)
-  if (avgDMLevel < CONSTANTS.DM_LOW_THRESHOLD_M && newDGLevel > CONSTANTS.DG_CRITICAL_LEVEL_M) {
+  // Rule 2: SBA goes to STANDBY if DM > 7.0m OR DG < 0.8m (keep at least 1 in service)
+  const sbaShouldStandby = avgDMLevel > CONSTANTS.DM_SBA_STANDBY_THRESHOLD_M ||
+                          newDGLevel < CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M;
+
+  if (sbaShouldStandby) {
+    const inServiceSBA = getInServiceExchangers(newState.exchangers.SBA);
+
+    // Put excess SBA on standby (keep at least 1 in service)
+    while (inServiceSBA.length > 1) {
+      const lowestLoadSBA = findLowestLoad(inServiceSBA);
+      lowestLoadSBA.status = 'STANDBY';
+      const idx = inServiceSBA.indexOf(lowestLoadSBA);
+      if (idx > -1) inServiceSBA.splice(idx, 1);
+
+      const standbyReason = newDGLevel < CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M
+        ? `DG level CRITICAL at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M}m)`
+        : `DM level at ${avgDMLevel.toFixed(2)}m (above ${CONSTANTS.DM_SBA_STANDBY_THRESHOLD_M}m)`;
+
+      const reason = `${standbyReason}. Putting anion exchanger on standby. Selected ${lowestLoadSBA.id} (lowest load: ${lowestLoadSBA.currentLoad.toFixed(0)}).`;
+      events.push({
+        timestamp: newState.currentTime,
+        type: 'STATUS_CHANGE',
+        message: `${lowestLoadSBA.id} put on standby - ${standbyReason}`,
+        equipmentId: lowestLoadSBA.id,
+        severity: 'warning',
+      });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_STANDBY',
+        lowestLoadSBA.id,
+        reason,
+        `Put ${lowestLoadSBA.id} on standby (lowest load)`,
+        newDGLevel,
+        avgDMLevel
+      ));
+    }
+  }
+
+  // Rule 3: SBA goes to SERVICE if DM < 6.8m AND DG > 1.0m (max 4)
+  if (avgDMLevel < CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M && newDGLevel > CONSTANTS.DG_SBA_MIN_THRESHOLD_M) {
     const availableSBA = getAvailableExchangers(newState.exchangers.SBA);
     const inServiceSBA = getInServiceExchangers(newState.exchangers.SBA);
 
@@ -608,11 +680,11 @@ function calculateNextState(
       sba.status = 'SERVICE';
       inServiceSBA.push(sba);
 
-      const reason = `DM level at ${avgDMLevel.toFixed(2)}m (below ${CONSTANTS.DM_LOW_THRESHOLD_M}m) AND DG level safe at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_CRITICAL_LEVEL_M}m). Putting additional anion exchanger into service to increase DM production.`;
+      const reason = `DM level at ${avgDMLevel.toFixed(2)}m (below ${CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M}m) AND DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SBA_MIN_THRESHOLD_M}m). Putting anion exchanger into service to increase DM production.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
-        message: `${sba.id} put into service - low DM level, DG safe`,
+        message: `${sba.id} put into service - DM below ${CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M}m, DG safe`,
         equipmentId: sba.id,
         severity: 'warning',
       });
@@ -990,10 +1062,29 @@ function createSnapshot(state: SimulationState, events: SimulationEvent[]): Time
 
   const activeRegens: string[] = [];
   const regenPhases: Record<string, RegenerationState['phase']> = {};
+  const regenDetails: Record<string, RegenerationDetail> = {};
+
   for (const type of ['SAC', 'SBA', 'MB'] as ExchangerType[]) {
-    if (state.regeneration[type]) {
-      activeRegens.push(state.regeneration[type]!.exchangerId);
-      regenPhases[state.regeneration[type]!.exchangerId] = state.regeneration[type]!.phase;
+    const regen = state.regeneration[type];
+    if (regen) {
+      activeRegens.push(regen.exchangerId);
+      regenPhases[regen.exchangerId] = regen.phase;
+
+      const totalDuration = regen.totalEndTime - regen.startTime;
+      const elapsedMinutes = state.currentTime - regen.startTime;
+      const remainingMinutes = Math.max(0, regen.totalEndTime - state.currentTime);
+
+      regenDetails[regen.exchangerId] = {
+        exchangerId: regen.exchangerId,
+        exchangerType: regen.exchangerType,
+        phase: regen.phase,
+        startTime: regen.startTime,
+        elapsedMinutes,
+        remainingMinutes,
+        totalDuration,
+        chemicalEndTime: regen.chemicalEndTime,
+        totalEndTime: regen.totalEndTime,
+      };
     }
   }
 
@@ -1012,6 +1103,7 @@ function createSnapshot(state: SimulationState, events: SimulationEvent[]): Time
       active: activeRegens,
       queue: queuedRegens,
       phases: regenPhases,
+      details: regenDetails,
     },
     events,
   };

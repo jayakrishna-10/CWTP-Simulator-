@@ -1,7 +1,7 @@
 // Equipment Types
 export type ExchangerType = 'SAC' | 'SBA' | 'MB';
 export type TankType = 'DG' | 'DM';
-export type EquipmentStatus = 'SERVICE' | 'STANDBY' | 'REGENERATION' | 'MAINTENANCE';
+export type EquipmentStatus = 'SERVICE' | 'STANDBY' | 'EXHAUST' | 'REGENERATION' | 'MAINTENANCE';
 export type TankStatus = 'SERVICE' | 'STANDBY';
 export type RegenerationPhase = 'CHEMICAL' | 'RINSE' | 'COMPLETE';
 
@@ -178,6 +178,18 @@ export interface FlowSnapshot {
   dmRegenConsumption: number;
 }
 
+export interface RegenerationDetail {
+  exchangerId: string;
+  exchangerType: ExchangerType;
+  phase: RegenerationPhase;
+  startTime: number;
+  elapsedMinutes: number;
+  remainingMinutes: number;
+  totalDuration: number;
+  chemicalEndTime: number;
+  totalEndTime: number;
+}
+
 export interface TimelineSnapshot {
   timestamp: number;
   exchangers: Record<string, {
@@ -197,6 +209,7 @@ export interface TimelineSnapshot {
     active: string[];
     queue: string[];
     phases: Record<string, RegenerationPhase>;
+    details: Record<string, RegenerationDetail>;
   };
   events: SimulationEvent[];
 }

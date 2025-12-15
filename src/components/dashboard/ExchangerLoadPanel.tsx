@@ -18,7 +18,10 @@ export default function ExchangerLoadPanel() {
 
   const getStatusBadge = (status: EquipmentStatus) => {
     const colors = STATUS_COLORS[status];
-    const label = status === 'SERVICE' ? 'SVC' : status === 'STANDBY' ? 'STB' : status === 'REGENERATION' ? 'RGN' : 'MNT';
+    const label = status === 'SERVICE' ? 'SVC' :
+                  status === 'STANDBY' ? 'STB' :
+                  status === 'EXHAUST' ? 'EXH' :
+                  status === 'REGENERATION' ? 'RGN' : 'MNT';
     return (
       <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${colors.bg} ${colors.text}`}>
         {label}

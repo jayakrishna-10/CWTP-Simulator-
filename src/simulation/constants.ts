@@ -24,7 +24,17 @@ export const CONSTANTS = {
   DG_WARNING_LOW_LEVEL_M: 1.0,
   DG_WARNING_HIGH_LEVEL_M: 2.0,
   // New threshold for exchanger service logic
-  DG_LOW_THRESHOLD_M: 1.0,  // If DG < 1m, run all available cations
+  DG_LOW_THRESHOLD_M: 1.0,  // If DG < 1m, run all available cations (legacy)
+
+  // SAC service thresholds
+  DG_SAC_SERVICE_THRESHOLD_M: 2.0,  // SAC goes to SERVICE if DG < 2.0m
+  DG_SAC_STANDBY_THRESHOLD_M: 2.0,  // SAC goes to STANDBY if DG > 2.0m
+
+  // SBA service thresholds
+  DM_SBA_SERVICE_THRESHOLD_M: 6.8,  // SBA goes to SERVICE if DM < 6.8m
+  DG_SBA_MIN_THRESHOLD_M: 1.0,      // SBA needs DG > 1.0m to go to SERVICE
+  DM_SBA_STANDBY_THRESHOLD_M: 7.0,  // SBA goes to STANDBY if DM > 7.0m
+  DG_SBA_CRITICAL_THRESHOLD_M: 0.8, // SBA goes to STANDBY if DG < 0.8m
 
   // DM Tank
   DM_CAPACITY_M3: 800,
@@ -121,6 +131,7 @@ export const SHIFT_INFO = {
 export const STATUS_COLORS = {
   SERVICE: { bg: 'bg-success-100', text: 'text-success-600', fill: '#22c55e' },
   STANDBY: { bg: 'bg-slate-100', text: 'text-slate-600', fill: '#64748b' },
+  EXHAUST: { bg: 'bg-orange-100', text: 'text-orange-600', fill: '#ea580c' },
   REGENERATION: { bg: 'bg-warning-100', text: 'text-warning-600', fill: '#f59e0b' },
   MAINTENANCE: { bg: 'bg-danger-100', text: 'text-danger-600', fill: '#ef4444' },
 };
