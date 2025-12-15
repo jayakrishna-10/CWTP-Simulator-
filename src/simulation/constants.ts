@@ -39,7 +39,14 @@ export const CONSTANTS = {
   DM_TRANSFER_TRIGGER_LEVEL_M: 1.0,
   DM_TRANSFER_STOP_LEVEL_M: 0.8,
   // New threshold for exchanger service logic
-  DM_LOW_THRESHOLD_M: 7.0,  // If DM < 7m, run all available anions
+  DM_LOW_THRESHOLD_M: 7.0,  // If DM < 7m, run all available anions (when DG > 0.8m)
+  DM_CRITICAL_LEVEL_M: 0.8, // Critical level for emergency transfer
+  DM_SERVICE_MIN_FOR_FILLING_M: 3.0, // Service tanks must be > 3m to fill standby
+  DM_STANDBY_FILL_TARGET_M: 7.0, // Fill standby tanks up to 7m
+  DM_STANDBY_FILL_RATE_M3HR: 100, // Fill rate for standby tanks
+
+  // DG Critical threshold
+  DG_CRITICAL_LEVEL_M: 0.8,  // Critical DG level for anion reduction
 
   // Maximum exchangers in service for each type
   MAX_EXCHANGERS_IN_SERVICE: 4,

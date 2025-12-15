@@ -35,6 +35,8 @@ export type LogsheetActionType =
   | 'REGENERATION_COMPLETED'
   | 'TRANSFER_STARTED'
   | 'TRANSFER_STOPPED'
+  | 'STANDBY_FILL_STARTED'
+  | 'STANDBY_FILL_COMPLETED'
   | 'STREAM_SHUTDOWN'
   | 'STREAM_RESTORED';
 
@@ -119,9 +121,14 @@ export interface RegenerationState {
   dgConsumptionEndTime: number;
 }
 
+// Transfer modes
+export type TransferMode = 'DRAW_FROM_STANDBY' | 'FILL_STANDBY';
+
 export interface TransferState {
   active: boolean;
-  sourceId: string | null;
+  mode: TransferMode | null;
+  sourceId: string | null;  // For DRAW_FROM_STANDBY: standby tank being drawn from
+  targetId: string | null;  // For FILL_STANDBY: standby tank being filled
   rate: number;
 }
 
