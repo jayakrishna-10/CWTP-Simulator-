@@ -15,12 +15,12 @@ import {
 } from 'recharts';
 
 const TREND_TYPES = [
-  { id: 'dg', label: 'DG Level' },
-  { id: 'dm', label: 'DM Levels' },
-  { id: 'sac', label: 'SAC Loads' },
-  { id: 'sba', label: 'SBA Loads' },
-  { id: 'mb', label: 'MB Loads' },
-  { id: 'flows', label: 'Flow Rates' },
+  { id: 'dg', label: 'DG' },
+  { id: 'dm', label: 'DM' },
+  { id: 'sac', label: 'SAC' },
+  { id: 'sba', label: 'SBA' },
+  { id: 'mb', label: 'MB' },
+  { id: 'flows', label: 'Flows' },
 ] as const;
 
 const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6'];
@@ -69,9 +69,9 @@ export default function TrendChart() {
               point[id] = ex.loadPercentage;
             });
         } else if (selectedTrendType === 'flows') {
-          point['SAC Output'] = snapshot.flows.sacTotalOutput;
-          point['SBA Output'] = snapshot.flows.sbaTotalOutput;
-          point['MB Output'] = snapshot.flows.mbTotalOutput;
+          point['SAC'] = snapshot.flows.sacTotalOutput;
+          point['SBA'] = snapshot.flows.sbaTotalOutput;
+          point['MB'] = snapshot.flows.mbTotalOutput;
           point['Supply'] = snapshot.flows.totalSupply;
         }
 
@@ -87,7 +87,7 @@ export default function TrendChart() {
     if (selectedTrendType === 'sac') return ['SAC-A', 'SAC-B', 'SAC-C', 'SAC-D', 'SAC-E'];
     if (selectedTrendType === 'sba') return ['SBA-A', 'SBA-B', 'SBA-C', 'SBA-D', 'SBA-E'];
     if (selectedTrendType === 'mb') return ['MB-A', 'MB-B', 'MB-C', 'MB-D', 'MB-E'];
-    if (selectedTrendType === 'flows') return ['SAC Output', 'SBA Output', 'MB Output', 'Supply'];
+    if (selectedTrendType === 'flows') return ['SAC', 'SBA', 'MB', 'Supply'];
     return [];
   };
 
@@ -99,33 +99,33 @@ export default function TrendChart() {
   };
 
   const getYAxisLabel = () => {
-    if (selectedTrendType === 'dg' || selectedTrendType === 'dm') return 'Level (m)';
-    if (['sac', 'sba', 'mb'].includes(selectedTrendType)) return 'Load (%)';
-    return 'Flow (m³/hr)';
+    if (selectedTrendType === 'dg' || selectedTrendType === 'dm') return 'm';
+    if (['sac', 'sba', 'mb'].includes(selectedTrendType)) return '%';
+    return 'm³/hr';
   };
 
   const getReferenceLines = () => {
     if (selectedTrendType === 'dg') {
       return (
         <>
-          <ReferenceLine y={CONSTANTS.DG_MIN_LEVEL_M} stroke="#ef4444" strokeDasharray="5 5" />
-          <ReferenceLine y={CONSTANTS.DG_OVERFLOW_LEVEL_M} stroke="#f59e0b" strokeDasharray="5 5" />
+          <ReferenceLine y={CONSTANTS.DG_MIN_LEVEL_M} stroke="#ef4444" strokeDasharray="3 3" />
+          <ReferenceLine y={CONSTANTS.DG_OVERFLOW_LEVEL_M} stroke="#f59e0b" strokeDasharray="3 3" />
         </>
       );
     }
     if (selectedTrendType === 'dm') {
       return (
         <>
-          <ReferenceLine y={CONSTANTS.DM_MIN_LEVEL_M} stroke="#ef4444" strokeDasharray="5 5" />
-          <ReferenceLine y={CONSTANTS.DM_OVERFLOW_LEVEL_M} stroke="#f59e0b" strokeDasharray="5 5" />
+          <ReferenceLine y={CONSTANTS.DM_MIN_LEVEL_M} stroke="#ef4444" strokeDasharray="3 3" />
+          <ReferenceLine y={CONSTANTS.DM_OVERFLOW_LEVEL_M} stroke="#f59e0b" strokeDasharray="3 3" />
         </>
       );
     }
     if (['sac', 'sba', 'mb'].includes(selectedTrendType)) {
       return (
         <>
-          <ReferenceLine y={100} stroke="#ef4444" strokeDasharray="5 5" />
-          <ReferenceLine y={75} stroke="#f59e0b" strokeDasharray="5 5" />
+          <ReferenceLine y={100} stroke="#ef4444" strokeDasharray="3 3" />
+          <ReferenceLine y={75} stroke="#f59e0b" strokeDasharray="3 3" />
         </>
       );
     }
@@ -133,61 +133,64 @@ export default function TrendChart() {
   };
 
   return (
-    <div className="card">
-      <div className="card-header flex items-center justify-between flex-wrap gap-2">
-        <span>Trend Charts</span>
-      </div>
-      <div className="p-4 space-y-4">
-        {/* Trend Type Selector */}
-        <div className="flex flex-wrap gap-2">
+    <div className="card h-full">
+      <div className="card-header py-2 flex items-center justify-between">
+        <span>Trends</span>
+        {/* Compact Trend Type Selector */}
+        <div className="flex gap-1">
           {TREND_TYPES.map((type) => (
             <button
               key={type.id}
               onClick={() => setSelectedTrendType(type.id)}
-              className={`tab ${
-                selectedTrendType === type.id ? 'tab-active' : 'tab-inactive'
+              className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                selectedTrendType === type.id
+                  ? 'bg-primary-100 text-primary-700 font-medium'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
               }`}
             >
               {type.label}
             </button>
           ))}
         </div>
-
+      </div>
+      <div className="p-2">
         {/* Chart */}
-        <div className="h-64 md:h-80">
+        <div className="h-52">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+            <LineChart data={chartData} margin={{ top: 5, right: 5, left: -15, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis
                 dataKey="timeLabel"
-                tick={{ fontSize: 10, fill: '#64748b' }}
+                tick={{ fontSize: 9, fill: '#64748b' }}
                 tickLine={false}
                 interval="preserveStartEnd"
               />
               <YAxis
                 domain={getYAxisDomain()}
-                tick={{ fontSize: 10, fill: '#64748b' }}
+                tick={{ fontSize: 9, fill: '#64748b' }}
                 tickLine={false}
-                width={40}
+                width={35}
                 label={{
                   value: getYAxisLabel(),
                   angle: -90,
                   position: 'insideLeft',
-                  style: { fontSize: 10, fill: '#64748b' },
+                  style: { fontSize: 9, fill: '#64748b' },
+                  offset: 10,
                 }}
               />
               <Tooltip
                 contentStyle={{
                   backgroundColor: 'white',
                   border: '1px solid #e2e8f0',
-                  borderRadius: '8px',
-                  fontSize: '12px',
+                  borderRadius: '6px',
+                  fontSize: '10px',
+                  padding: '4px 8px',
                 }}
               />
               <Legend
                 iconType="circle"
-                iconSize={8}
-                wrapperStyle={{ fontSize: '11px' }}
+                iconSize={6}
+                wrapperStyle={{ fontSize: '10px', paddingTop: '4px' }}
               />
               {getReferenceLines()}
               {/* Current Time Indicator */}
@@ -202,9 +205,9 @@ export default function TrendChart() {
                   type="monotone"
                   dataKey={key}
                   stroke={COLORS[index % COLORS.length]}
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   dot={false}
-                  activeDot={{ r: 4 }}
+                  activeDot={{ r: 3 }}
                 />
               ))}
             </LineChart>

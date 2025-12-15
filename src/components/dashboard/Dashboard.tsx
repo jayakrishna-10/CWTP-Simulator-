@@ -14,7 +14,7 @@ export default function Dashboard() {
   if (!result) return null;
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-slate-100">
       <Header />
 
       {/* Mobile Nav Tabs */}
@@ -23,8 +23,8 @@ export default function Dashboard() {
       </div>
 
       {/* Main Content */}
-      <main className="flex-1 pb-40 md:pb-32">
-        <div className="max-w-7xl mx-auto px-4 py-4 space-y-4">
+      <main className="flex-1 pb-36 md:pb-28">
+        <div className="max-w-7xl mx-auto px-2 py-2 space-y-2">
           {/* Mobile: Tab Content */}
           <div className="md:hidden">
             {activeTab === 'overview' && <OverviewPanel />}
@@ -33,21 +33,33 @@ export default function Dashboard() {
             {activeTab === 'trends' && <TrendChart />}
           </div>
 
-          {/* Desktop: Grid Layout */}
-          <div className="hidden md:grid md:grid-cols-2 gap-4">
-            <OverviewPanel />
-            <TankLevelPanel />
-          </div>
-          <div className="hidden md:block">
-            <ExchangerLoadPanel />
-          </div>
-          <div className="hidden md:block">
-            <TrendChart />
-          </div>
+          {/* Desktop: Dense Grid Layout */}
+          <div className="hidden md:block space-y-2">
+            {/* Top Row: Overview + Tanks + Loads side by side */}
+            <div className="grid grid-cols-12 gap-2">
+              {/* Overview Panel - narrower */}
+              <div className="col-span-3">
+                <OverviewPanel />
+              </div>
+              {/* Tank Levels Panel */}
+              <div className="col-span-4">
+                <TankLevelPanel />
+              </div>
+              {/* Exchanger Loads Panel */}
+              <div className="col-span-5">
+                <ExchangerLoadPanel />
+              </div>
+            </div>
 
-          {/* Event Log - Always visible on desktop, optional on mobile */}
-          <div className="hidden md:block">
-            <EventLog />
+            {/* Bottom Row: Trends + Event Log */}
+            <div className="grid grid-cols-12 gap-2">
+              <div className="col-span-8">
+                <TrendChart />
+              </div>
+              <div className="col-span-4">
+                <EventLog />
+              </div>
+            </div>
           </div>
         </div>
       </main>
