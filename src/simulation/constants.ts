@@ -61,6 +61,22 @@ export const CONSTANTS = {
   // Maximum exchangers in service for each type
   MAX_EXCHANGERS_IN_SERVICE: 4,
 
+  // Minimum exchangers in service for each type
+  MIN_EXCHANGERS_IN_SERVICE: 1,
+
+  // Changeover control - prevents frequent state changes (hunting behavior)
+  // Minimum time (minutes) an exchanger must remain in a state before changing
+  MIN_TIME_IN_STATE_MINUTES: 15,
+
+  // Hysteresis thresholds - different thresholds for entering vs exiting states
+  // SAC hysteresis: will go to SERVICE at 1.8m, but won't go to STANDBY until 2.2m
+  DG_SAC_SERVICE_HYSTERESIS_LOW_M: 1.8,   // SAC goes to SERVICE if DG < this
+  DG_SAC_STANDBY_HYSTERESIS_HIGH_M: 2.2,  // SAC goes to STANDBY if DG > this
+
+  // SBA hysteresis for DM level
+  DM_SBA_SERVICE_HYSTERESIS_LOW_M: 6.5,   // SBA goes to SERVICE if DM < this
+  DM_SBA_STANDBY_HYSTERESIS_HIGH_M: 7.2,  // SBA goes to STANDBY if DM > this
+
   // Exchangers
   EXCHANGER_FLOW_MIN: 60,
   EXCHANGER_FLOW_MAX: 160,

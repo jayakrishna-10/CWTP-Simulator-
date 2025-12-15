@@ -99,6 +99,7 @@ export interface ExchangerState {
   obrLimit: number;
   flowRate: number;
   loadPercentage: number;
+  lastStatusChange: number; // Timestamp (minutes) when status last changed - for changeover cooldown
 }
 
 export interface TankState {

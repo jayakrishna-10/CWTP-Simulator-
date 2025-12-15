@@ -67,6 +67,7 @@ export function initializeState(config: SimulationConfig): SimulationState {
         obrLimit: e.obrLimit,
         flowRate: e.flowRate,
         loadPercentage: (e.initialLoad / e.obrLimit) * 100,
+        lastStatusChange: 0, // Initialize at time 0
       })),
       SBA: config.exchangers.SBA.map((e) => ({
         id: e.id,
@@ -76,6 +77,7 @@ export function initializeState(config: SimulationConfig): SimulationState {
         obrLimit: e.obrLimit,
         flowRate: e.flowRate,
         loadPercentage: (e.initialLoad / e.obrLimit) * 100,
+        lastStatusChange: 0, // Initialize at time 0
       })),
       MB: config.exchangers.MB.map((e) => ({
         id: e.id,
@@ -85,6 +87,7 @@ export function initializeState(config: SimulationConfig): SimulationState {
         obrLimit: e.obrLimit,
         flowRate: e.flowRate,
         loadPercentage: (e.initialLoad / e.obrLimit) * 100,
+        lastStatusChange: 0, // Initialize at time 0
       })),
     },
     tanks: {
@@ -428,6 +431,7 @@ function calculateNextState(
 
           if (shouldBeInService) {
             exchanger.status = 'SERVICE';
+            exchanger.lastStatusChange = newState.currentTime;
             events.push({
               timestamp: newState.currentTime,
               type: 'REGEN_COMPLETE',
@@ -444,6 +448,7 @@ function calculateNextState(
             });
           } else {
             exchanger.status = 'STANDBY';
+            exchanger.lastStatusChange = newState.currentTime;
             events.push({
               timestamp: newState.currentTime,
               type: 'REGEN_COMPLETE',
@@ -461,6 +466,7 @@ function calculateNextState(
           const nextExchanger = newState.exchangers[type].find((e) => e.id === nextId);
           if (nextExchanger) {
             nextExchanger.status = 'REGENERATION';
+            nextExchanger.lastStatusChange = newState.currentTime;
             newState.regeneration[type] = startRegeneration(nextId, type, newState.currentTime);
             events.push({
               timestamp: newState.currentTime,
@@ -489,6 +495,7 @@ function calculateNextState(
   }
 
   // Step 9: Check exhaustion and trigger regeneration
+  // Note: Exhaustion is a forced changeover - no cooldown applies since the exchanger is depleted
   for (const type of ['SAC', 'SBA', 'MB'] as ExchangerType[]) {
     for (const exchanger of newState.exchangers[type]) {
       if (
@@ -509,6 +516,7 @@ function calculateNextState(
         );
         if (standby) {
           standby.status = 'SERVICE';
+          standby.lastStatusChange = newState.currentTime;
           events.push({
             timestamp: newState.currentTime,
             type: 'STATUS_CHANGE',
@@ -521,6 +529,7 @@ function calculateNextState(
         // Start or queue regeneration
         if (!newState.regeneration[type]) {
           exchanger.status = 'REGENERATION';
+          exchanger.lastStatusChange = newState.currentTime;
           newState.regeneration[type] = startRegeneration(
             exchanger.id,
             type,
@@ -536,6 +545,7 @@ function calculateNextState(
         } else {
           // Set to EXHAUST state - bed is exhausted and waiting for regeneration
           exchanger.status = 'EXHAUST';
+          exchanger.lastStatusChange = newState.currentTime;
           newState.regenerationQueue[type].push(exchanger.id);
           events.push({
             timestamp: newState.currentTime,
@@ -550,6 +560,10 @@ function calculateNextState(
   }
 
   // Step 10: Apply automatic controls with refined exchanger service logic
+  // Key constraints:
+  // 1. Anions in service >= Cations in service (SBA >= SAC)
+  // 2. Minimize changeovers using hysteresis and cooldown periods
+  // 3. Maintain DG levels properly
 
   const avgDMLevel = getAverageDMLevel(newState);
 
@@ -566,22 +580,54 @@ function calculateNextState(
   const findLowestLoad = (exchangers: ExchangerState[]) =>
     exchangers.reduce((min, e) => (e.currentLoad < min.currentLoad ? e : min));
 
-  // Rule 1: SAC goes to SERVICE if DG < 2.0m (max 4)
-  if (newDGLevel < CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M) {
-    const availableSAC = getAvailableExchangers(newState.exchangers.SAC);
+  // Helper to check if exchanger can change status (respects cooldown period)
+  // Returns true if enough time has passed since last status change
+  const canChangeStatus = (exchanger: ExchangerState, currentTime: number): boolean => {
+    const timeSinceLastChange = currentTime - exchanger.lastStatusChange;
+    return timeSinceLastChange >= CONSTANTS.MIN_TIME_IN_STATE_MINUTES;
+  };
+
+  // Helper to get available exchangers that can change status (respects cooldown)
+  const getAvailableExchangersWithCooldown = (exchangers: ExchangerState[], currentTime: number) =>
+    exchangers.filter((e) => e.status === 'STANDBY' && canChangeStatus(e, currentTime));
+
+  // Rule 1: SAC goes to SERVICE if DG < hysteresis threshold (max 4)
+  // Uses lower hysteresis threshold to avoid hunting
+  // Also checks anion-cation balance: can only add SAC if there are enough SBAs
+  if (newDGLevel < CONSTANTS.DG_SAC_SERVICE_HYSTERESIS_LOW_M) {
+    const availableSAC = getAvailableExchangersWithCooldown(newState.exchangers.SAC, newState.currentTime);
     const inServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
+    const currentSBAInService = getInServiceExchangers(newState.exchangers.SBA).length;
 
     // Put available SAC into service (up to max 4 total in service)
+    // CONSTRAINT: Anions >= Cations - only add SAC if we have enough SBAs
     for (const sac of availableSAC) {
       if (inServiceSAC.length >= CONSTANTS.MAX_EXCHANGERS_IN_SERVICE) break;
+
+      // Check anion-cation balance: after adding this SAC, would SBA count still be >= SAC count?
+      const newSACCount = inServiceSAC.length + 1;
+      if (currentSBAInService < newSACCount) {
+        // Cannot add SAC - would violate anion >= cation constraint
+        // Log this constraint violation for visibility
+        events.push({
+          timestamp: newState.currentTime,
+          type: 'STATUS_CHANGE',
+          message: `Cannot add ${sac.id} to service - would violate anion >= cation balance (SBA: ${currentSBAInService}, SAC would be: ${newSACCount})`,
+          equipmentId: sac.id,
+          severity: 'info',
+        });
+        break;
+      }
+
       sac.status = 'SERVICE';
+      sac.lastStatusChange = newState.currentTime;
       inServiceSAC.push(sac);
 
-      const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M}m threshold). Putting cation exchanger into service to increase DG inflow.`;
+      const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_SAC_SERVICE_HYSTERESIS_LOW_M}m threshold). Putting cation exchanger into service to increase DG inflow. Anion-cation balance maintained (SBA: ${currentSBAInService}, SAC: ${newSACCount}).`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
-        message: `${sac.id} put into service - DG below ${CONSTANTS.DG_SAC_SERVICE_THRESHOLD_M}m`,
+        message: `${sac.id} put into service - DG below ${CONSTANTS.DG_SAC_SERVICE_HYSTERESIS_LOW_M}m`,
         equipmentId: sac.id,
         severity: 'warning',
       });
@@ -598,22 +644,36 @@ function calculateNextState(
     }
   }
 
-  // Rule 1b: SAC goes to STANDBY if DG > 2.0m (keep at least 1 in service)
-  if (newDGLevel > CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M) {
+  // Rule 1b: SAC goes to STANDBY if DG > hysteresis high threshold (keep at least 1 in service)
+  // Uses higher hysteresis threshold to avoid hunting
+  if (newDGLevel > CONSTANTS.DG_SAC_STANDBY_HYSTERESIS_HIGH_M) {
     const inServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
+    // Filter for those that can change status (cooldown check)
+    const canChangeSAC = inServiceSAC.filter(e => canChangeStatus(e, newState.currentTime));
 
     // Put excess SAC on standby (keep at least 1 in service)
-    while (inServiceSAC.length > 1) {
-      const lowestLoadSAC = findLowestLoad(inServiceSAC);
+    // Only consider exchangers that have passed the cooldown period
+    while (inServiceSAC.length > CONSTANTS.MIN_EXCHANGERS_IN_SERVICE && canChangeSAC.length > 0) {
+      // Find lowest load among those that can change
+      const lowestLoadSAC = findLowestLoad(canChangeSAC);
+
+      // Don't remove if it would leave us below minimum
+      if (inServiceSAC.length <= CONSTANTS.MIN_EXCHANGERS_IN_SERVICE) break;
+
       lowestLoadSAC.status = 'STANDBY';
+      lowestLoadSAC.lastStatusChange = newState.currentTime;
+
+      // Remove from tracking arrays
       const idx = inServiceSAC.indexOf(lowestLoadSAC);
       if (idx > -1) inServiceSAC.splice(idx, 1);
+      const canChangeIdx = canChangeSAC.indexOf(lowestLoadSAC);
+      if (canChangeIdx > -1) canChangeSAC.splice(canChangeIdx, 1);
 
-      const reason = `DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M}m threshold). Putting cation exchanger on standby. Selected ${lowestLoadSAC.id} (lowest load: ${lowestLoadSAC.currentLoad.toFixed(0)}).`;
+      const reason = `DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SAC_STANDBY_HYSTERESIS_HIGH_M}m threshold). Putting cation exchanger on standby. Selected ${lowestLoadSAC.id} (lowest load: ${lowestLoadSAC.currentLoad.toFixed(0)}).`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
-        message: `${lowestLoadSAC.id} put on standby - DG above ${CONSTANTS.DG_SAC_STANDBY_THRESHOLD_M}m`,
+        message: `${lowestLoadSAC.id} put on standby - DG above ${CONSTANTS.DG_SAC_STANDBY_HYSTERESIS_HIGH_M}m`,
         equipmentId: lowestLoadSAC.id,
         severity: 'info',
       });
@@ -630,25 +690,43 @@ function calculateNextState(
     }
   }
 
-  // Rule 2: SBA goes to STANDBY if DM > 7.0m OR DG < 0.8m (keep at least 1 in service)
-  const sbaShouldStandby = avgDMLevel > CONSTANTS.DM_SBA_STANDBY_THRESHOLD_M ||
+  // Rule 2: SBA goes to STANDBY if DM > hysteresis high threshold OR DG < critical (keep at least 1 in service)
+  // CONSTRAINT: Anions >= Cations - cannot remove SBA if it would make SBA < SAC
+  // Uses higher hysteresis threshold for DM to avoid hunting
+  // DG critical is an emergency condition - no hysteresis needed
+  const sbaShouldStandby = avgDMLevel > CONSTANTS.DM_SBA_STANDBY_HYSTERESIS_HIGH_M ||
                           newDGLevel < CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M;
 
   if (sbaShouldStandby) {
     const inServiceSBA = getInServiceExchangers(newState.exchangers.SBA);
+    const currentSACInService = getInServiceExchangers(newState.exchangers.SAC).length;
+    // Filter for those that can change status (cooldown check)
+    const canChangeSBA = inServiceSBA.filter(e => canChangeStatus(e, newState.currentTime));
 
     // Put excess SBA on standby (keep at least 1 in service)
-    while (inServiceSBA.length > 1) {
-      const lowestLoadSBA = findLowestLoad(inServiceSBA);
+    // CONSTRAINT: Cannot go below SAC count (anion >= cation)
+    const minSBARequired = Math.max(CONSTANTS.MIN_EXCHANGERS_IN_SERVICE, currentSACInService);
+
+    while (inServiceSBA.length > minSBARequired && canChangeSBA.length > 0) {
+      const lowestLoadSBA = findLowestLoad(canChangeSBA);
+
+      // Double-check constraint
+      if (inServiceSBA.length <= minSBARequired) break;
+
       lowestLoadSBA.status = 'STANDBY';
+      lowestLoadSBA.lastStatusChange = newState.currentTime;
+
+      // Remove from tracking arrays
       const idx = inServiceSBA.indexOf(lowestLoadSBA);
       if (idx > -1) inServiceSBA.splice(idx, 1);
+      const canChangeIdx = canChangeSBA.indexOf(lowestLoadSBA);
+      if (canChangeIdx > -1) canChangeSBA.splice(canChangeIdx, 1);
 
       const standbyReason = newDGLevel < CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M
         ? `DG level CRITICAL at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_SBA_CRITICAL_THRESHOLD_M}m)`
-        : `DM level at ${avgDMLevel.toFixed(2)}m (above ${CONSTANTS.DM_SBA_STANDBY_THRESHOLD_M}m)`;
+        : `DM level at ${avgDMLevel.toFixed(2)}m (above ${CONSTANTS.DM_SBA_STANDBY_HYSTERESIS_HIGH_M}m)`;
 
-      const reason = `${standbyReason}. Putting anion exchanger on standby. Selected ${lowestLoadSBA.id} (lowest load: ${lowestLoadSBA.currentLoad.toFixed(0)}).`;
+      const reason = `${standbyReason}. Putting anion exchanger on standby. Selected ${lowestLoadSBA.id} (lowest load: ${lowestLoadSBA.currentLoad.toFixed(0)}). Anion-cation balance maintained (SBA: ${inServiceSBA.length}, SAC: ${currentSACInService}).`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
@@ -669,22 +747,25 @@ function calculateNextState(
     }
   }
 
-  // Rule 3: SBA goes to SERVICE if DM < 6.8m AND DG > 1.0m (max 4)
-  if (avgDMLevel < CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M && newDGLevel > CONSTANTS.DG_SBA_MIN_THRESHOLD_M) {
-    const availableSBA = getAvailableExchangers(newState.exchangers.SBA);
+  // Rule 3: SBA goes to SERVICE if DM < hysteresis low threshold AND DG > 1.0m (max 4)
+  // Adding SBA to service helps maintain anion >= cation balance
+  // Uses lower hysteresis threshold for DM to avoid hunting
+  if (avgDMLevel < CONSTANTS.DM_SBA_SERVICE_HYSTERESIS_LOW_M && newDGLevel > CONSTANTS.DG_SBA_MIN_THRESHOLD_M) {
+    const availableSBA = getAvailableExchangersWithCooldown(newState.exchangers.SBA, newState.currentTime);
     const inServiceSBA = getInServiceExchangers(newState.exchangers.SBA);
 
     // Put available SBA into service (up to max 4 total in service)
     for (const sba of availableSBA) {
       if (inServiceSBA.length >= CONSTANTS.MAX_EXCHANGERS_IN_SERVICE) break;
       sba.status = 'SERVICE';
+      sba.lastStatusChange = newState.currentTime;
       inServiceSBA.push(sba);
 
-      const reason = `DM level at ${avgDMLevel.toFixed(2)}m (below ${CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M}m) AND DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SBA_MIN_THRESHOLD_M}m). Putting anion exchanger into service to increase DM production.`;
+      const reason = `DM level at ${avgDMLevel.toFixed(2)}m (below ${CONSTANTS.DM_SBA_SERVICE_HYSTERESIS_LOW_M}m) AND DG level at ${newDGLevel.toFixed(2)}m (above ${CONSTANTS.DG_SBA_MIN_THRESHOLD_M}m). Putting anion exchanger into service to increase DM production.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
-        message: `${sba.id} put into service - DM below ${CONSTANTS.DM_SBA_SERVICE_THRESHOLD_M}m, DG safe`,
+        message: `${sba.id} put into service - DM below ${CONSTANTS.DM_SBA_SERVICE_HYSTERESIS_LOW_M}m, DG safe`,
         equipmentId: sba.id,
         severity: 'warning',
       });
@@ -702,20 +783,23 @@ function calculateNextState(
   }
 
   // Rule 4: Number of MBs in service should equal number of anions (SBA)
-  const sbaInServiceCount = getInServiceExchangers(newState.exchangers.SBA).length;
-  const mbInServiceCount = getInServiceExchangers(newState.exchangers.MB).length;
+  // MB matching doesn't need cooldown check since it follows SBA changes
+  // The cooldown is already applied when SBA count changes
+  const updatedSbaInServiceCount = getInServiceExchangers(newState.exchangers.SBA).length;
+  const updatedMbInServiceCount = getInServiceExchangers(newState.exchangers.MB).length;
 
-  if (mbInServiceCount < sbaInServiceCount) {
+  if (updatedMbInServiceCount < updatedSbaInServiceCount) {
     // Need to add more MBs to match SBA count
     const availableMB = getAvailableExchangers(newState.exchangers.MB);
-    let needed = sbaInServiceCount - mbInServiceCount;
+    let needed = updatedSbaInServiceCount - updatedMbInServiceCount;
 
     for (const mb of availableMB) {
       if (needed <= 0) break;
       mb.status = 'SERVICE';
+      mb.lastStatusChange = newState.currentTime;
       needed--;
 
-      const reason = `Matching MB count to SBA count. SBA in service: ${sbaInServiceCount}, MB was: ${mbInServiceCount}. Putting MB into service to maintain balance.`;
+      const reason = `Matching MB count to SBA count. SBA in service: ${updatedSbaInServiceCount}, MB was: ${updatedMbInServiceCount}. Putting MB into service to maintain balance.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
@@ -734,19 +818,20 @@ function calculateNextState(
         avgDMLevel
       ));
     }
-  } else if (mbInServiceCount > sbaInServiceCount && sbaInServiceCount > 0) {
+  } else if (updatedMbInServiceCount > updatedSbaInServiceCount && updatedSbaInServiceCount > 0) {
     // Need to reduce MBs to match SBA count - put lowest load on standby
     const mbInService = getInServiceExchangers(newState.exchangers.MB);
-    let excess = mbInServiceCount - sbaInServiceCount;
+    let excess = updatedMbInServiceCount - updatedSbaInServiceCount;
 
-    while (excess > 0 && mbInService.length > sbaInServiceCount) {
+    while (excess > 0 && mbInService.length > updatedSbaInServiceCount) {
       const lowestLoadMB = findLowestLoad(mbInService);
       lowestLoadMB.status = 'STANDBY';
+      lowestLoadMB.lastStatusChange = newState.currentTime;
       const idx = mbInService.indexOf(lowestLoadMB);
       if (idx > -1) mbInService.splice(idx, 1);
       excess--;
 
-      const reason = `Matching MB count to SBA count. SBA in service: ${sbaInServiceCount}, MB was: ${mbInServiceCount + excess + 1}. Selected ${lowestLoadMB.id} (lowest load: ${lowestLoadMB.currentLoad.toFixed(0)}) for standby.`;
+      const reason = `Matching MB count to SBA count. SBA in service: ${updatedSbaInServiceCount}, MB was: ${updatedMbInServiceCount + excess + 1}. Selected ${lowestLoadMB.id} (lowest load: ${lowestLoadMB.currentLoad.toFixed(0)}) for standby.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'STATUS_CHANGE',
@@ -945,8 +1030,11 @@ function calculateNextState(
 
     const streamLabel = ['A', 'B', 'C', 'D', 'E'][streamIndex];
     newState.exchangers.SAC[streamIndex].status = 'STANDBY';
+    newState.exchangers.SAC[streamIndex].lastStatusChange = newState.currentTime;
     newState.exchangers.SBA[streamIndex].status = 'STANDBY';
+    newState.exchangers.SBA[streamIndex].lastStatusChange = newState.currentTime;
     newState.exchangers.MB[streamIndex].status = 'STANDBY';
+    newState.exchangers.MB[streamIndex].lastStatusChange = newState.currentTime;
     newState.streamOutOfService = streamLabel;
 
     const reason = `All DM tanks above overflow level (${CONSTANTS.DM_OVERFLOW_LEVEL_M}m). Shutting down Stream ${streamLabel} (highest combined load: ${maxLoad.toFixed(0)}) to prevent overflow.`;
@@ -980,9 +1068,18 @@ function calculateNextState(
         const sac = newState.exchangers.SAC[streamIndex];
         const sba = newState.exchangers.SBA[streamIndex];
         const mb = newState.exchangers.MB[streamIndex];
-        if (sac.status === 'STANDBY') sac.status = 'SERVICE';
-        if (sba.status === 'STANDBY') sba.status = 'SERVICE';
-        if (mb.status === 'STANDBY') mb.status = 'SERVICE';
+        if (sac.status === 'STANDBY') {
+          sac.status = 'SERVICE';
+          sac.lastStatusChange = newState.currentTime;
+        }
+        if (sba.status === 'STANDBY') {
+          sba.status = 'SERVICE';
+          sba.lastStatusChange = newState.currentTime;
+        }
+        if (mb.status === 'STANDBY') {
+          mb.status = 'SERVICE';
+          mb.lastStatusChange = newState.currentTime;
+        }
 
         const reason = `DM level dropped below ${CONSTANTS.DM_RECOVERY_LEVEL_M}m. Restoring Stream ${newState.streamOutOfService} to service.`;
         events.push({
