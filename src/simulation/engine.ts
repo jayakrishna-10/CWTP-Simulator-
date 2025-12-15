@@ -9,8 +9,49 @@ import {
   RegenerationState,
   ExchangerType,
   FlowSnapshot,
+  LogsheetEntry,
+  LogsheetActionType,
+  ShiftInfo,
 } from './types';
-import { CONSTANTS } from './constants';
+import { CONSTANTS, SHIFT_INFO } from './constants';
+
+// Helper function to format time for logsheet
+function formatActualTime(minutesIntoShift: number, shiftStartHour: number): string {
+  const totalMinutes = shiftStartHour * 60 + minutesIntoShift;
+  const hours = Math.floor(totalMinutes / 60) % 24;
+  const mins = totalMinutes % 60;
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+}
+
+// Helper function to create logsheet entry
+function createLogsheetEntry(
+  timestamp: number,
+  shiftStartHour: number,
+  action: LogsheetActionType,
+  equipmentId: string,
+  reason: string,
+  operatorAction: string,
+  dgLevel?: number,
+  dmLevel?: number
+): LogsheetEntry {
+  return {
+    timestamp,
+    actualTime: formatActualTime(timestamp, shiftStartHour),
+    action,
+    equipmentId,
+    reason,
+    operatorAction,
+    dgLevel,
+    dmLevel,
+  };
+}
+
+// Helper function to get average DM level
+function getAverageDMLevel(state: SimulationState): number {
+  const serviceDM = state.tanks.DM.filter(t => t.status === 'SERVICE');
+  if (serviceDM.length === 0) return 0;
+  return serviceDM.reduce((sum, t) => sum + t.currentLevel, 0) / serviceDM.length;
+}
 
 // Initialize simulation state from config
 export function initializeState(config: SimulationConfig): SimulationState {
@@ -224,7 +265,9 @@ function updateRegenerationProgress(
 function calculateNextState(
   state: SimulationState,
   deltaMinutes: number,
-  events: SimulationEvent[]
+  events: SimulationEvent[],
+  logsheet: LogsheetEntry[],
+  shiftStartHour: number
 ): SimulationState {
   const newState = JSON.parse(JSON.stringify(state)) as SimulationState;
   newState.currentTime += deltaMinutes;
@@ -444,27 +487,183 @@ function calculateNextState(
     }
   }
 
-  // Step 10: Apply automatic controls
+  // Step 10: Apply automatic controls with new exchanger service logic
 
-  // Low DG level response
-  if (newDGLevel < CONSTANTS.DG_MIN_LEVEL_M) {
-    const sbaInService = newState.exchangers.SBA.filter((e) => e.status === 'SERVICE');
-    if (sbaInService.length > 1) {
-      const lowestLoad = sbaInService.reduce((min, e) =>
-        e.currentLoad < min.currentLoad ? e : min
-      );
-      lowestLoad.status = 'STANDBY';
+  const avgDMLevel = getAverageDMLevel(newState);
+
+  // Helper to get available (STANDBY) exchangers
+  const getAvailableExchangers = (exchangers: ExchangerState[]) =>
+    exchangers.filter((e) => e.status === 'STANDBY');
+
+  // Helper to get in-service exchangers
+  const getInServiceExchangers = (exchangers: ExchangerState[]) =>
+    exchangers.filter((e) => e.status === 'SERVICE');
+
+  // Helper to find lowest load exchanger from a list
+  const findLowestLoad = (exchangers: ExchangerState[]) =>
+    exchangers.reduce((min, e) => (e.currentLoad < min.currentLoad ? e : min));
+
+  // Rule 1: If DG < 1m, run all available cation exchangers (max 4)
+  if (newDGLevel < CONSTANTS.DG_LOW_THRESHOLD_M) {
+    const availableSAC = getAvailableExchangers(newState.exchangers.SAC);
+    const inServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
+
+    // Put available SAC into service (up to max 4 total in service)
+    for (const sac of availableSAC) {
+      if (inServiceSAC.length >= CONSTANTS.MAX_EXCHANGERS_IN_SERVICE) break;
+      sac.status = 'SERVICE';
+      inServiceSAC.push(sac);
+
+      const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_LOW_THRESHOLD_M}m threshold). Putting additional cation exchanger into service to increase DG inflow.`;
       events.push({
         timestamp: newState.currentTime,
-        type: 'LEVEL_WARNING',
-        message: `${lowestLoad.id} taken out of service due to low DG level`,
-        equipmentId: lowestLoad.id,
+        type: 'STATUS_CHANGE',
+        message: `${sac.id} put into service - low DG level`,
+        equipmentId: sac.id,
         severity: 'warning',
       });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_SERVICE',
+        sac.id,
+        reason,
+        `Put ${sac.id} into service`,
+        newDGLevel,
+        avgDMLevel
+      ));
+    }
+
+    // Rule 3: If DG < 1m AND all available cations are in service, reduce SBA by putting lowest load on standby
+    const updatedAvailableSAC = getAvailableExchangers(newState.exchangers.SAC);
+    const updatedInServiceSAC = getInServiceExchangers(newState.exchangers.SAC);
+    if (updatedAvailableSAC.length === 0 && updatedInServiceSAC.length > 0) {
+      const sbaInService = getInServiceExchangers(newState.exchangers.SBA);
+      if (sbaInService.length > 1) {
+        const lowestLoadSBA = findLowestLoad(sbaInService);
+        lowestLoadSBA.status = 'STANDBY';
+
+        const reason = `DG level at ${newDGLevel.toFixed(2)}m (below ${CONSTANTS.DG_LOW_THRESHOLD_M}m). All available cations are in service. Reducing anion exchangers to decrease DG consumption. Selected ${lowestLoadSBA.id} (lowest load: ${lowestLoadSBA.currentLoad.toFixed(0)}).`;
+        events.push({
+          timestamp: newState.currentTime,
+          type: 'LEVEL_WARNING',
+          message: `${lowestLoadSBA.id} taken out of service - low DG level, all SAC in service`,
+          equipmentId: lowestLoadSBA.id,
+          severity: 'warning',
+        });
+        logsheet.push(createLogsheetEntry(
+          newState.currentTime,
+          shiftStartHour,
+          'EXCHANGER_TO_STANDBY',
+          lowestLoadSBA.id,
+          reason,
+          `Put ${lowestLoadSBA.id} on standby (lowest load)`,
+          newDGLevel,
+          avgDMLevel
+        ));
+      }
     }
   }
 
-  // Low DM level response - initiate transfer
+  // Rule 2: If DM tank level < 7m, run all available anion exchangers (max 4)
+  if (avgDMLevel < CONSTANTS.DM_LOW_THRESHOLD_M) {
+    const availableSBA = getAvailableExchangers(newState.exchangers.SBA);
+    const inServiceSBA = getInServiceExchangers(newState.exchangers.SBA);
+
+    // Put available SBA into service (up to max 4 total in service)
+    for (const sba of availableSBA) {
+      if (inServiceSBA.length >= CONSTANTS.MAX_EXCHANGERS_IN_SERVICE) break;
+      sba.status = 'SERVICE';
+      inServiceSBA.push(sba);
+
+      const reason = `DM level at ${avgDMLevel.toFixed(2)}m (below ${CONSTANTS.DM_LOW_THRESHOLD_M}m threshold). Putting additional anion exchanger into service to increase DM production.`;
+      events.push({
+        timestamp: newState.currentTime,
+        type: 'STATUS_CHANGE',
+        message: `${sba.id} put into service - low DM level`,
+        equipmentId: sba.id,
+        severity: 'warning',
+      });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_SERVICE',
+        sba.id,
+        reason,
+        `Put ${sba.id} into service`,
+        newDGLevel,
+        avgDMLevel
+      ));
+    }
+  }
+
+  // Rule 4: Number of MBs in service should equal number of anions (SBA)
+  const sbaInServiceCount = getInServiceExchangers(newState.exchangers.SBA).length;
+  const mbInServiceCount = getInServiceExchangers(newState.exchangers.MB).length;
+
+  if (mbInServiceCount < sbaInServiceCount) {
+    // Need to add more MBs to match SBA count
+    const availableMB = getAvailableExchangers(newState.exchangers.MB);
+    let needed = sbaInServiceCount - mbInServiceCount;
+
+    for (const mb of availableMB) {
+      if (needed <= 0) break;
+      mb.status = 'SERVICE';
+      needed--;
+
+      const reason = `Matching MB count to SBA count. SBA in service: ${sbaInServiceCount}, MB was: ${mbInServiceCount}. Putting MB into service to maintain balance.`;
+      events.push({
+        timestamp: newState.currentTime,
+        type: 'STATUS_CHANGE',
+        message: `${mb.id} put into service - matching SBA count`,
+        equipmentId: mb.id,
+        severity: 'info',
+      });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_SERVICE',
+        mb.id,
+        reason,
+        `Put ${mb.id} into service (matching SBA count)`,
+        newDGLevel,
+        avgDMLevel
+      ));
+    }
+  } else if (mbInServiceCount > sbaInServiceCount && sbaInServiceCount > 0) {
+    // Need to reduce MBs to match SBA count - Rule 5: put lowest load on standby
+    const mbInService = getInServiceExchangers(newState.exchangers.MB);
+    let excess = mbInServiceCount - sbaInServiceCount;
+
+    while (excess > 0 && mbInService.length > sbaInServiceCount) {
+      const lowestLoadMB = findLowestLoad(mbInService);
+      lowestLoadMB.status = 'STANDBY';
+      const idx = mbInService.indexOf(lowestLoadMB);
+      if (idx > -1) mbInService.splice(idx, 1);
+      excess--;
+
+      const reason = `Matching MB count to SBA count. SBA in service: ${sbaInServiceCount}, MB was: ${mbInServiceCount + excess + 1}. Selected ${lowestLoadMB.id} (lowest load: ${lowestLoadMB.currentLoad.toFixed(0)}) for standby.`;
+      events.push({
+        timestamp: newState.currentTime,
+        type: 'STATUS_CHANGE',
+        message: `${lowestLoadMB.id} put on standby - matching SBA count`,
+        equipmentId: lowestLoadMB.id,
+        severity: 'info',
+      });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'EXCHANGER_TO_STANDBY',
+        lowestLoadMB.id,
+        reason,
+        `Put ${lowestLoadMB.id} on standby (matching SBA count, lowest load)`,
+        newDGLevel,
+        avgDMLevel
+      ));
+    }
+  }
+
+  // Low DM level response - initiate transfer from standby tanks
   const serviceDMTanksAfter = newState.tanks.DM.filter((t) => t.status === 'SERVICE');
   const anyLowDM = serviceDMTanksAfter.some(
     (t) => t.currentLevel < CONSTANTS.DM_MIN_LEVEL_M
@@ -480,6 +679,7 @@ function calculateNextState(
         sourceId: standbyWithWater.id,
         rate: CONSTANTS.DM_TRANSFER_RATE_M3HR,
       };
+      const reason = `Service DM tanks critically low (below ${CONSTANTS.DM_MIN_LEVEL_M}m). Drawing water from standby tank ${standbyWithWater.id} at ${standbyWithWater.currentLevel.toFixed(2)}m.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'TRANSFER_START',
@@ -487,6 +687,16 @@ function calculateNextState(
         equipmentId: standbyWithWater.id,
         severity: 'warning',
       });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'TRANSFER_STARTED',
+        standbyWithWater.id,
+        reason,
+        `Started transfer from ${standbyWithWater.id} at ${CONSTANTS.DM_TRANSFER_RATE_M3HR} m³/hr`,
+        newDGLevel,
+        avgDMLevel
+      ));
     }
   }
 
@@ -499,6 +709,9 @@ function calculateNextState(
     const sourceEmpty = sourceTank && sourceTank.currentLevel <= CONSTANTS.DM_TRANSFER_STOP_LEVEL_M;
 
     if (serviceTanksRecovered || sourceEmpty) {
+      const reason = serviceTanksRecovered
+        ? `Service tanks recovered above ${CONSTANTS.DM_WARNING_LOW_LEVEL_M}m. Transfer no longer needed.`
+        : `Source tank ${newState.transfer.sourceId} depleted to ${sourceTank?.currentLevel.toFixed(2)}m. Stopping transfer.`;
       events.push({
         timestamp: newState.currentTime,
         type: 'TRANSFER_END',
@@ -506,11 +719,21 @@ function calculateNextState(
         equipmentId: newState.transfer.sourceId || '',
         severity: 'info',
       });
+      logsheet.push(createLogsheetEntry(
+        newState.currentTime,
+        shiftStartHour,
+        'TRANSFER_STOPPED',
+        newState.transfer.sourceId || '',
+        reason,
+        `Stopped transfer from ${newState.transfer.sourceId}`,
+        newDGLevel,
+        getAverageDMLevel(newState)
+      ));
       newState.transfer = { active: false, sourceId: null, rate: 0 };
     }
   }
 
-  // High DM level response
+  // High DM level response - stream shutdown
   const allDMHigh = newState.tanks.DM.every(
     (t) => t.currentLevel > CONSTANTS.DM_OVERFLOW_LEVEL_M
   );
@@ -538,6 +761,7 @@ function calculateNextState(
     newState.exchangers.MB[streamIndex].status = 'STANDBY';
     newState.streamOutOfService = streamLabel;
 
+    const reason = `All DM tanks above overflow level (${CONSTANTS.DM_OVERFLOW_LEVEL_M}m). Shutting down Stream ${streamLabel} (highest combined load: ${maxLoad.toFixed(0)}) to prevent overflow.`;
     events.push({
       timestamp: newState.currentTime,
       type: 'LEVEL_WARNING',
@@ -545,6 +769,16 @@ function calculateNextState(
       equipmentId: `Stream-${streamLabel}`,
       severity: 'error',
     });
+    logsheet.push(createLogsheetEntry(
+      newState.currentTime,
+      shiftStartHour,
+      'STREAM_SHUTDOWN',
+      `Stream-${streamLabel}`,
+      reason,
+      `Shut down Stream ${streamLabel} (SAC-${streamLabel}, SBA-${streamLabel}, MB-${streamLabel})`,
+      newDGLevel,
+      getAverageDMLevel(newState)
+    ));
   }
 
   // Stream recovery
@@ -562,6 +796,7 @@ function calculateNextState(
         if (sba.status === 'STANDBY') sba.status = 'SERVICE';
         if (mb.status === 'STANDBY') mb.status = 'SERVICE';
 
+        const reason = `DM level dropped below ${CONSTANTS.DM_RECOVERY_LEVEL_M}m. Restoring Stream ${newState.streamOutOfService} to service.`;
         events.push({
           timestamp: newState.currentTime,
           type: 'STATUS_CHANGE',
@@ -569,6 +804,16 @@ function calculateNextState(
           equipmentId: `Stream-${newState.streamOutOfService}`,
           severity: 'info',
         });
+        logsheet.push(createLogsheetEntry(
+          newState.currentTime,
+          shiftStartHour,
+          'STREAM_RESTORED',
+          `Stream-${newState.streamOutOfService}`,
+          reason,
+          `Restored Stream ${newState.streamOutOfService} to service`,
+          newDGLevel,
+          getAverageDMLevel(newState)
+        ));
         newState.streamOutOfService = null;
       }
     }
@@ -660,18 +905,59 @@ function createSnapshot(state: SimulationState, events: SimulationEvent[]): Time
 export function runSimulation(config: SimulationConfig): SimulationResult {
   const timeline: TimelineSnapshot[] = [];
   const allEvents: SimulationEvent[] = [];
+  const logsheet: LogsheetEntry[] = [];
   let state = initializeState(config);
+
+  // Get shift info
+  const shiftInfo: ShiftInfo = SHIFT_INFO[config.shift];
+  const shiftStartHour = shiftInfo.startHour;
 
   // Record initial state
   timeline.push(createSnapshot(state, []));
 
-  // Run simulation
+  // Run simulation for one complete shift (8 hours = 480 minutes)
   for (let t = 1; t <= CONSTANTS.SIMULATION_DURATION_MINUTES; t++) {
     const stepEvents: SimulationEvent[] = [];
-    state = calculateNextState(state, CONSTANTS.CALCULATION_INTERVAL_MINUTES, stepEvents);
+    state = calculateNextState(
+      state,
+      CONSTANTS.CALCULATION_INTERVAL_MINUTES,
+      stepEvents,
+      logsheet,
+      shiftStartHour
+    );
     allEvents.push(...stepEvents);
     timeline.push(createSnapshot(state, stepEvents));
   }
+
+  // Add logsheet entries for regenerations that completed during the shift
+  for (const event of allEvents) {
+    if (event.type === 'REGEN_START') {
+      logsheet.push(createLogsheetEntry(
+        event.timestamp,
+        shiftStartHour,
+        'REGENERATION_STARTED',
+        event.equipmentId,
+        `${event.equipmentId} reached OBR limit and requires regeneration.`,
+        `Started regeneration of ${event.equipmentId}`,
+        undefined,
+        undefined
+      ));
+    } else if (event.type === 'REGEN_COMPLETE') {
+      logsheet.push(createLogsheetEntry(
+        event.timestamp,
+        shiftStartHour,
+        'REGENERATION_COMPLETED',
+        event.equipmentId,
+        `${event.equipmentId} regeneration cycle completed. Exchanger ready for standby.`,
+        `Completed regeneration of ${event.equipmentId}`,
+        undefined,
+        undefined
+      ));
+    }
+  }
+
+  // Sort logsheet by timestamp
+  logsheet.sort((a, b) => a.timestamp - b.timestamp);
 
   // Calculate summary
   const dgLevels = timeline.map((s) => s.tanks['DG-A'].level);
@@ -701,5 +987,7 @@ export function runSimulation(config: SimulationConfig): SimulationResult {
     timeline,
     summary,
     allEvents,
+    logsheet,
+    shiftInfo,
   };
 }

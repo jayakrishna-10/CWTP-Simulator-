@@ -5,6 +5,17 @@ export type EquipmentStatus = 'SERVICE' | 'STANDBY' | 'REGENERATION' | 'MAINTENA
 export type TankStatus = 'SERVICE' | 'STANDBY';
 export type RegenerationPhase = 'CHEMICAL' | 'RINSE' | 'COMPLETE';
 
+// Shift Types
+export type ShiftType = 'A' | 'B' | 'C';
+
+// Shift Configuration
+export interface ShiftInfo {
+  type: ShiftType;
+  name: string;
+  startHour: number; // 24-hour format
+  endHour: number;   // 24-hour format
+}
+
 // Event Types
 export type EventType =
   | 'REGEN_START'
@@ -15,6 +26,29 @@ export type EventType =
   | 'TRANSFER_START'
   | 'TRANSFER_END'
   | 'EXHAUSTION';
+
+// Logsheet Action Types
+export type LogsheetActionType =
+  | 'EXCHANGER_TO_SERVICE'
+  | 'EXCHANGER_TO_STANDBY'
+  | 'REGENERATION_STARTED'
+  | 'REGENERATION_COMPLETED'
+  | 'TRANSFER_STARTED'
+  | 'TRANSFER_STOPPED'
+  | 'STREAM_SHUTDOWN'
+  | 'STREAM_RESTORED';
+
+// Logsheet Entry - for automated actions log
+export interface LogsheetEntry {
+  timestamp: number;           // Minutes from shift start
+  actualTime: string;          // Actual clock time (e.g., "06:30")
+  action: LogsheetActionType;
+  equipmentId: string;
+  reason: string;              // Detailed reason for the action
+  dgLevel?: number;            // DG level at time of action
+  dmLevel?: number;            // Average DM level at time of action
+  operatorAction: string;      // Human-readable action description
+}
 
 // Configuration Interfaces
 export interface ExchangerConfig {
@@ -51,6 +85,7 @@ export interface SimulationConfig {
     DM: DMTankConfig[];
   };
   supply: SupplyConfig;
+  shift: ShiftType;
 }
 
 // State Interfaces
@@ -179,4 +214,6 @@ export interface SimulationResult {
   timeline: TimelineSnapshot[];
   summary: SimulationSummary;
   allEvents: SimulationEvent[];
+  logsheet: LogsheetEntry[];
+  shiftInfo: ShiftInfo;
 }
